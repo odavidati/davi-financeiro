@@ -16,35 +16,52 @@ function getPhase(month) {
   return 'obra'
 }
 
-function buildLocalState() {
-  const saved = loadState()
-  if (saved && saved._seeded) {
-    // Apply theme on load
-    if (saved.settings?.theme) {
-      document.documentElement.setAttribute('data-theme', saved.settings.theme)
-    }
-    return saved
-  }
+function buildFreshState() {
   const seeded = {}
   for (const [month, txs] of Object.entries(SEED_TRANSACTIONS)) {
     seeded[month] = txs.map(tx => ({ ...tx, category: categorize(tx.description) }))
   }
-  const initial = {
+  return {
     activeMonth: todayMonth(),
     transactions: seeded,
     settings: {
       ccsEmitted: false,
       emergencyFundCurrent: 0,
       emergencyFundGoal: 8000,
-      theme: 'light', // light | dark
+      theme: 'light',
     },
     checklist: {},
-    bills: {}, // { '2026-05': { 'cond': { paid: false, paidDate: null }, ... } }
+    bills: {},
     _seeded: true,
   }
+}
+
+function buildLocalState() {
+  try {
+    const saved = loadState()
+    // Validate that saved state has required fields
+    if (saved && saved._seeded && saved.transactions && typeof saved.transactions === 'object') {
+      // Apply theme on load
+      const theme = saved.settings?.theme || 'light'
+      document.documentElement.setAttribute('data-theme', theme)
+      // Ensure all required fields exist (merge with defaults)
+      return {
+        activeMonth: saved.activeMonth || todayMonth(),
+        transactions: saved.transactions,
+        settings: { ccsEmitted: false, emergencyFundCurrent: 0, emergencyFundGoal: 8000, theme: 'light', ...(saved.settings || {}) },
+        checklist: saved.checklist || {},
+        bills: saved.bills || {},
+        _seeded: true,
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to load saved state, rebuilding:', e)
+    try { clearState() } catch {}
+  }
+  const fresh = buildFreshState()
   document.documentElement.setAttribute('data-theme', 'light')
-  saveState(initial)
-  return initial
+  saveState(fresh)
+  return fresh
 }
 
 function reducer(state, action) {
@@ -55,23 +72,23 @@ function reducer(state, action) {
       break
     case 'UPSERT_TRANSACTIONS': {
       const { month, list } = action
-      const existing = (state.transactions[month] || []).filter(t => !list.some(n => n.id === t.id))
+      const existing = ((state.transactions || {})[month] || []).filter(t => !list.some(n => n.id === t.id))
       next = { ...state, transactions: { ...state.transactions, [month]: [...existing, ...list].sort((a,b) => b.date.localeCompare(a.date)) } }
       break
     }
     case 'ADD_TRANSACTION': {
       const { month, tx } = action
-      next = { ...state, transactions: { ...state.transactions, [month]: [tx, ...(state.transactions[month] || [])].sort((a,b) => b.date.localeCompare(a.date)) } }
+      next = { ...state, transactions: { ...(state.transactions||{}), [month]: [tx, ...((state.transactions||{})[month] || [])].sort((a,b) => b.date.localeCompare(a.date)) } }
       break
     }
     case 'DELETE_TRANSACTION': {
       const { month, id } = action
-      next = { ...state, transactions: { ...state.transactions, [month]: (state.transactions[month] || []).filter(t => t.id !== id) } }
+      next = { ...state, transactions: { ...(state.transactions||{}), [month]: ((state.transactions||{})[month] || []).filter(t => t.id !== id) } }
       break
     }
     case 'UPDATE_TRANSACTION': {
       const { month, tx } = action
-      next = { ...state, transactions: { ...state.transactions, [month]: (state.transactions[month] || []).map(t => t.id === tx.id ? tx : t) } }
+      next = { ...state, transactions: { ...(state.transactions||{}), [month]: ((state.transactions||{})[month] || []).map(t => t.id === tx.id ? tx : t) } }
       break
     }
     case 'SET_SETTING': {
@@ -116,7 +133,8 @@ function reducer(state, action) {
     case 'RESET':
       clearState()
       document.documentElement.setAttribute('data-theme', 'light')
-      next = buildLocalState()
+      next = buildFreshState()
+      saveState(next)
       break
     default:
       return state
@@ -175,9 +193,9 @@ export function AppProvider({ children, userId }) {
     }
   }
 
-  const getFixed    = useCallback((month) => FIXED_EXPENSES[getPhase(month)], [])
-  const getTx       = useCallback((month) => state.transactions[month] || [], [state.transactions])
-  const getBills    = useCallback((month) => state.bills[month] || {}, [state.bills])
+  const getFixed    = useCallback((month) => FIXED_EXPENSES[getPhase(month)] || [], [])
+  const getTx       = useCallback((month) => (state.transactions || {})[month] || [], [state.transactions])
+  const getBills    = useCallback((month) => (state.bills || {})[month] || {}, [state.bills])
 
   const getSummary  = useCallback((month) => {
     const fixed = getFixed(month); const txs = getTx(month)
