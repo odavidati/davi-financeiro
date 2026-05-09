@@ -1,5 +1,5 @@
 import { useApp } from '../../context/AppContext'
-import { USER, NAPOLES, FIXED_EXPENSES, CATEGORIES } from '../../constants'
+import { USER, NAPOLES, DEFAULT_FIXED, CATEGORIES } from '../../constants'
 import { fmt } from '../../utils/format'
 
 function Toggle({ on, onToggle }) {
@@ -101,7 +101,7 @@ export default function Config({ onSignOut }) {
         ].map(phase => (
           <div key={phase.key} style={{ marginBottom: 16 }}>
             <div className={`fs-13 fw-700 ${phase.color} mb-8`}>{phase.label}</div>
-            {FIXED_EXPENSES[phase.key].map(f => (
+            {DEFAULT_FIXED[phase.key].map(f => (
               <div key={f.id} className="row-between" style={{ padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
                 <div className="row gap-8">
                   <span style={{ fontSize: 15 }}>{f.icon}</span>
@@ -115,7 +115,7 @@ export default function Config({ onSignOut }) {
             <div className="row-between mt-6">
               <span className="fs-12 fw-700">Total</span>
               <span className={`amt-xs fw-700 ${phase.color}`}>
-                -{fmt(FIXED_EXPENSES[phase.key].reduce((s, f) => s + f.amount, 0))}
+                -{fmt(DEFAULT_FIXED[phase.key].reduce((s, f) => s + f.amount, 0))}
               </span>
             </div>
           </div>

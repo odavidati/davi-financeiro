@@ -1,6 +1,6 @@
 import { useApp } from '../../context/AppContext'
 import MonthSelector from '../MonthSelector'
-import { NAPOLES, USER } from '../../constants'
+import { NAPOLES, USER, INCOME_SOURCES } from '../../constants'
 import { fmt } from '../../utils/format'
 
 const MOTIVATION = [
@@ -60,7 +60,12 @@ export default function Home({ onImpulse, onGoToContas }) {
             <div style={{ fontFamily: 'DM Mono', fontSize: 30, fontWeight: 500, letterSpacing: -1, lineHeight: 1, marginBottom: 6, color: 'white' }}>
               {fmt(s.surplus)}
             </div>
-            <div style={{ fontSize: 13, opacity: 0.85 }}>de {fmt(USER.netIncome)} líquido/mês</div>
+            <div style={{ fontSize: 13, opacity: 0.85 }}>
+              {s.variableIncome > 0
+                ? <>CLT {fmt(USER.netIncome)} + extras {fmt(s.variableIncome)} = <strong>{fmt(s.totalIncome)}</strong></>
+                : <>de {fmt(USER.netIncome)} CLT/mês</>
+              }
+            </div>
 
             {alertLevel && (
               <div style={{ marginTop: 12, background: alertLevel === 'danger' ? 'rgba(231,76,60,0.25)' : 'rgba(243,156,18,0.25)', borderRadius: 10, padding: '9px 12px', border: '1px solid rgba(255,255,255,0.2)' }}>

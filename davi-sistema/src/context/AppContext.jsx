@@ -1,5 +1,5 @@
 import { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react'
-import { FIXED_EXPENSES, CATEGORIES, USER } from '../constants'
+import { DEFAULT_FIXED, PRESET_BILLS, CATEGORIES, INCOME_SOURCES, USER } from '../constants'
 import { loadState, saveState, clearState } from '../utils/storage'
 import { todayMonth } from '../utils/format'
 import { categorize } from '../utils/categorizer'
@@ -16,6 +16,21 @@ function getPhase(month) {
   return 'obra'
 }
 
+// ─── Get effective fixed expenses for a month ───
+// Merges base defaults with any per-month customizations stored in state
+function getEffectiveFixed(month, customFixed) {
+  const phase = getPhase(month)
+  const base  = DEFAULT_FIXED[phase] || []
+  const overrides = customFixed?.[month] || {}
+  // Apply overrides: amount changes, hidden items, custom additions
+  return [
+    ...base
+      .filter(f => overrides.hidden?.[f.id] !== true)
+      .map(f => ({ ...f, amount: overrides.amounts?.[f.id] ?? f.amount })),
+    ...(overrides.extra || []),
+  ]
+}
+
 function buildFreshState() {
   const seeded = {}
   for (const [month, txs] of Object.entries(SEED_TRANSACTIONS)) {
@@ -24,38 +39,36 @@ function buildFreshState() {
   return {
     activeMonth: todayMonth(),
     transactions: seeded,
-    settings: {
-      ccsEmitted: false,
-      emergencyFundCurrent: 0,
-      emergencyFundGoal: 8000,
-      theme: 'light',
-    },
+    settings: { ccsEmitted: false, emergencyFundCurrent: 0, emergencyFundGoal: 8000, theme: 'light' },
     checklist: {},
     bills: {},
+    customFixed: {},  // per-month fixed expense customizations
+    reminders: [],    // { id, title, amount, dueDate, category, icon, repeat, done }
     _seeded: true,
+    _version: 2,
   }
 }
 
 function buildLocalState() {
   try {
     const saved = loadState()
-    // Validate that saved state has required fields
     if (saved && saved._seeded && saved.transactions && typeof saved.transactions === 'object') {
-      // Apply theme on load
       const theme = saved.settings?.theme || 'light'
       document.documentElement.setAttribute('data-theme', theme)
-      // Ensure all required fields exist (merge with defaults)
       return {
         activeMonth: saved.activeMonth || todayMonth(),
         transactions: saved.transactions,
         settings: { ccsEmitted: false, emergencyFundCurrent: 0, emergencyFundGoal: 8000, theme: 'light', ...(saved.settings || {}) },
         checklist: saved.checklist || {},
         bills: saved.bills || {},
+        customFixed: saved.customFixed || {},
+        reminders: saved.reminders || [],
         _seeded: true,
+        _version: 2,
       }
     }
   } catch (e) {
-    console.warn('Failed to load saved state, rebuilding:', e)
+    console.warn('State load failed, rebuilding:', e)
     try { clearState() } catch {}
   }
   const fresh = buildFreshState()
@@ -72,30 +85,28 @@ function reducer(state, action) {
       break
     case 'UPSERT_TRANSACTIONS': {
       const { month, list } = action
-      const existing = ((state.transactions || {})[month] || []).filter(t => !list.some(n => n.id === t.id))
-      next = { ...state, transactions: { ...state.transactions, [month]: [...existing, ...list].sort((a,b) => b.date.localeCompare(a.date)) } }
+      const existing = ((state.transactions||{})[month]||[]).filter(t => !list.some(n => n.id === t.id))
+      next = { ...state, transactions: { ...(state.transactions||{}), [month]: [...existing,...list].sort((a,b)=>b.date.localeCompare(a.date)) } }
       break
     }
     case 'ADD_TRANSACTION': {
       const { month, tx } = action
-      next = { ...state, transactions: { ...(state.transactions||{}), [month]: [tx, ...((state.transactions||{})[month] || [])].sort((a,b) => b.date.localeCompare(a.date)) } }
+      next = { ...state, transactions: { ...(state.transactions||{}), [month]: [tx,...((state.transactions||{})[month]||[])].sort((a,b)=>b.date.localeCompare(a.date)) } }
       break
     }
     case 'DELETE_TRANSACTION': {
       const { month, id } = action
-      next = { ...state, transactions: { ...(state.transactions||{}), [month]: ((state.transactions||{})[month] || []).filter(t => t.id !== id) } }
+      next = { ...state, transactions: { ...(state.transactions||{}), [month]: ((state.transactions||{})[month]||[]).filter(t=>t.id!==id) } }
       break
     }
     case 'UPDATE_TRANSACTION': {
       const { month, tx } = action
-      next = { ...state, transactions: { ...(state.transactions||{}), [month]: ((state.transactions||{})[month] || []).map(t => t.id === tx.id ? tx : t) } }
+      next = { ...state, transactions: { ...(state.transactions||{}), [month]: ((state.transactions||{})[month]||[]).map(t=>t.id===tx.id?tx:t) } }
       break
     }
     case 'SET_SETTING': {
       const newSettings = { ...state.settings, [action.key]: action.value }
-      if (action.key === 'theme') {
-        document.documentElement.setAttribute('data-theme', action.value)
-      }
+      if (action.key === 'theme') document.documentElement.setAttribute('data-theme', action.value)
       next = { ...state, settings: newSettings }
       break
     }
@@ -107,28 +118,69 @@ function reducer(state, action) {
     }
     case 'TOGGLE_BILL': {
       const { month, billId } = action
-      const mb = state.bills[month] || {}
-      const current = mb[billId] || { paid: false, paidDate: null }
-      const paid = !current.paid
-      next = { ...state, bills: { ...state.bills, [month]: { ...mb, [billId]: { paid, paidDate: paid ? new Date().toISOString().slice(0,10) : null } } } }
+      const mb = (state.bills||{})[month] || {}
+      const cur = mb[billId] || { paid: false, paidDate: null }
+      const paid = !cur.paid
+      next = { ...state, bills: { ...(state.bills||{}), [month]: { ...mb, [billId]: { paid, paidDate: paid ? new Date().toISOString().slice(0,10) : null } } } }
       break
     }
     case 'ADD_CUSTOM_BILL': {
       const { month, bill } = action
-      const mb = state.bills[month] || {}
-      const custom = mb._custom || []
-      next = { ...state, bills: { ...state.bills, [month]: { ...mb, _custom: [...custom, bill] } } }
+      const mb = (state.bills||{})[month] || {}
+      next = { ...state, bills: { ...(state.bills||{}), [month]: { ...mb, _custom: [...(mb._custom||[]), bill] } } }
       break
     }
     case 'DELETE_CUSTOM_BILL': {
       const { month, billId } = action
-      const mb = state.bills[month] || {}
-      const custom = (mb._custom || []).filter(b => b.id !== billId)
-      next = { ...state, bills: { ...state.bills, [month]: { ...mb, _custom: custom } } }
+      const mb = (state.bills||{})[month] || {}
+      next = { ...state, bills: { ...(state.bills||{}), [month]: { ...mb, _custom: (mb._custom||[]).filter(b=>b.id!==billId) } } }
+      break
+    }
+    // ─── Custom fixed expenses ───
+    case 'SET_FIXED_AMOUNT': {
+      const { month, fixedId, amount } = action
+      const cf = state.customFixed || {}
+      const mf = cf[month] || {}
+      next = { ...state, customFixed: { ...cf, [month]: { ...mf, amounts: { ...(mf.amounts||{}), [fixedId]: amount } } } }
+      break
+    }
+    case 'TOGGLE_FIXED_HIDDEN': {
+      const { month, fixedId } = action
+      const cf = state.customFixed || {}
+      const mf = cf[month] || {}
+      const cur = mf.hidden?.[fixedId] || false
+      next = { ...state, customFixed: { ...cf, [month]: { ...mf, hidden: { ...(mf.hidden||{}), [fixedId]: !cur } } } }
+      break
+    }
+    case 'ADD_EXTRA_FIXED': {
+      const { month, item } = action
+      const cf = state.customFixed || {}
+      const mf = cf[month] || {}
+      next = { ...state, customFixed: { ...cf, [month]: { ...mf, extra: [...(mf.extra||[]), item] } } }
+      break
+    }
+    case 'REMOVE_EXTRA_FIXED': {
+      const { month, itemId } = action
+      const cf = state.customFixed || {}
+      const mf = cf[month] || {}
+      next = { ...state, customFixed: { ...cf, [month]: { ...mf, extra: (mf.extra||[]).filter(e=>e.id!==itemId) } } }
+      break
+    }
+    // ─── Reminders ───
+    case 'ADD_REMINDER': {
+      next = { ...state, reminders: [...(state.reminders||[]), action.reminder] }
+      break
+    }
+    case 'UPDATE_REMINDER': {
+      next = { ...state, reminders: (state.reminders||[]).map(r=>r.id===action.reminder.id?action.reminder:r) }
+      break
+    }
+    case 'DELETE_REMINDER': {
+      next = { ...state, reminders: (state.reminders||[]).filter(r=>r.id!==action.id) }
       break
     }
     case 'MERGE_REMOTE':
-      next = { ...state, transactions: action.transactions ?? state.transactions, settings: action.settings ?? state.settings, checklist: action.checklist ?? state.checklist }
+      next = { ...state, transactions: action.transactions??state.transactions, settings: action.settings??state.settings, checklist: action.checklist??state.checklist }
       break
     case 'RESET':
       clearState()
@@ -156,7 +208,7 @@ export function AppProvider({ children, userId }) {
     load()
   }, [userId])
 
-  function scheduleSyncTransactions(month, list) {
+  function scheduleSyncTx(month, list) {
     if (!userId || !isSupabaseConfigured()) return
     clearTimeout(syncTimeout.current[`tx_${month}`])
     syncTimeout.current[`tx_${month}`] = setTimeout(() => syncTransactionsUp(userId, month, list), 1500)
@@ -166,7 +218,7 @@ export function AppProvider({ children, userId }) {
     clearTimeout(syncTimeout.current.settings)
     syncTimeout.current.settings = setTimeout(() => syncSettingsUp(userId, settings), 1500)
   }
-  function scheduleSyncChecklist(month, items) {
+  function scheduleSyncCk(month, items) {
     if (!userId || !isSupabaseConfigured()) return
     clearTimeout(syncTimeout.current[`ck_${month}`])
     syncTimeout.current[`ck_${month}`] = setTimeout(() => syncChecklistUp(userId, month, items), 1500)
@@ -175,37 +227,48 @@ export function AppProvider({ children, userId }) {
   function dispatchAndSync(action) {
     dispatch(action)
     switch (action.type) {
-      case 'UPSERT_TRANSACTIONS': case 'ADD_TRANSACTION': case 'UPDATE_TRANSACTION': {
-        const month = action.month
-        setTimeout(() => { const s = loadState(); scheduleSyncTransactions(month, s?.transactions?.[month] || []) }, 0)
-        break
-      }
+      case 'UPSERT_TRANSACTIONS': case 'ADD_TRANSACTION': case 'UPDATE_TRANSACTION':
+        setTimeout(() => { const s = loadState(); scheduleSyncTx(action.month, s?.transactions?.[action.month]||[]) }, 0); break
       case 'DELETE_TRANSACTION':
         if (userId && isSupabaseConfigured()) deleteTransactionRemote(userId, action.id)
-        setTimeout(() => { const s = loadState(); scheduleSyncTransactions(action.month, s?.transactions?.[action.month] || []) }, 0)
-        break
+        setTimeout(() => { const s = loadState(); scheduleSyncTx(action.month, s?.transactions?.[action.month]||[]) }, 0); break
       case 'SET_SETTING':
-        setTimeout(() => { const s = loadState(); scheduleSyncSettings(s?.settings || {}) }, 0)
-        break
+        setTimeout(() => { const s = loadState(); scheduleSyncSettings(s?.settings||{}) }, 0); break
       case 'TOGGLE_CHECKLIST':
-        setTimeout(() => { const s = loadState(); scheduleSyncChecklist(action.month, s?.checklist?.[action.month] || {}) }, 0)
-        break
+        setTimeout(() => { const s = loadState(); scheduleSyncCk(action.month, s?.checklist?.[action.month]||{}) }, 0); break
     }
   }
 
-  const getFixed    = useCallback((month) => FIXED_EXPENSES[getPhase(month)] || [], [])
-  const getTx       = useCallback((month) => (state.transactions || {})[month] || [], [state.transactions])
-  const getBills    = useCallback((month) => (state.bills || {})[month] || {}, [state.bills])
+  const getFixed = useCallback((month) =>
+    getEffectiveFixed(month, state.customFixed),
+    [state.customFixed]
+  )
 
-  const getSummary  = useCallback((month) => {
+  const getTx           = useCallback((month) => (state.transactions||{})[month] || [], [state.transactions])
+  const getBills        = useCallback((month) => (state.bills||{})[month] || {}, [state.bills])
+  const getCustomFixed  = useCallback((month) => (state.customFixed||{})[month] || {}, [state.customFixed])
+  const getReminders    = useCallback((month) => {
+    const [y, m] = month.split('-').map(Number)
+    return (state.reminders||[]).filter(r => {
+      if (!r.dueDate) return false
+      const [ry, rm] = r.dueDate.split('-').map(Number)
+      return ry === y && rm === m
+    })
+  }, [state.reminders])
+
+  const getSummary = useCallback((month) => {
     const fixed = getFixed(month); const txs = getTx(month)
     const fixedTotal = fixed.reduce((s,f) => s+f.amount, 0)
     const expenses   = txs.filter(t => t.amount < 0).reduce((s,t) => s+Math.abs(t.amount), 0)
-    const credits    = txs.filter(t => t.amount > 0).reduce((s,t) => s+t.amount, 0)
+    // Variable income = positive transactions (freela, aulas, convites, etc.)
+    const variableIncome = txs.filter(t => t.amount > 0).reduce((s,t) => s+t.amount, 0)
+    // Real income = CLT base salary + variable income this month
+    const cltSalary  = USER.netIncome
+    const totalIncome = cltSalary + variableIncome
     const totalSpent = fixedTotal + expenses
-    const surplus    = USER.netIncome - totalSpent + credits
-    const pct        = Math.round((totalSpent / USER.netIncome) * 100)
-    return { fixedTotal, expenses, credits, totalSpent, surplus, pct, net: USER.netIncome }
+    const surplus    = totalIncome - totalSpent
+    const pct        = Math.round((totalSpent / Math.max(totalIncome, 1)) * 100)
+    return { fixedTotal, expenses, variableIncome, totalIncome, cltSalary, totalSpent, surplus, pct, net: totalIncome }
   }, [getFixed, getTx])
 
   const getByCategory = useCallback((month) => {
@@ -224,25 +287,33 @@ export function AppProvider({ children, userId }) {
     return Object.values(map).filter(c => c.total > 0).sort((a,b) => b.total - a.total)
   }, [getFixed, getTx])
 
-  // Bills summary for a month
+  // Bills for a month: fixed + presets + custom
   const getBillsSummary = useCallback((month) => {
     const fixed = getFixed(month)
     const billStatus = getBills(month)
     const custom = billStatus._custom || []
+    // Get preset bills for this month
+    const presets = PRESET_BILLS.filter(b => b.month === month)
     const allBills = [
-      ...fixed.map(f => ({ ...f, billId: f.id, isPaid: !!(billStatus[f.id]?.paid), paidDate: billStatus[f.id]?.paidDate })),
+      ...fixed.map(f => ({ ...f, billId: f.id, isPaid: !!(billStatus[f.id]?.paid), paidDate: billStatus[f.id]?.paidDate, isFixed: true })),
+      ...presets.map(b => ({ ...b, billId: b.id, isPaid: !!(billStatus[b.id]?.paid), paidDate: billStatus[b.id]?.paidDate, isPreset: true })),
       ...custom.map(b => ({ ...b, billId: b.id, isPaid: !!(billStatus[b.id]?.paid), paidDate: billStatus[b.id]?.paidDate })),
     ]
     const paid   = allBills.filter(b => b.isPaid)
     const unpaid = allBills.filter(b => !b.isPaid)
     const totalPaid   = paid.reduce((s,b) => s+b.amount, 0)
     const totalUnpaid = unpaid.reduce((s,b) => s+b.amount, 0)
-    const pct = allBills.length > 0 ? Math.round((paid.length / allBills.length) * 100) : 0
-    return { allBills, paid, unpaid, totalPaid, totalUnpaid, pct, allPaid: unpaid.length === 0 && allBills.length > 0 }
+    const pct = allBills.length > 0 ? Math.round((paid.length/allBills.length)*100) : 0
+    return { allBills, paid, unpaid, totalPaid, totalUnpaid, pct, allPaid: unpaid.length===0 && allBills.length>0 }
   }, [getFixed, getBills])
 
   return (
-    <AppContext.Provider value={{ state, dispatch: dispatchAndSync, getFixed, getTx, getSummary, getByCategory, getBills, getBillsSummary }}>
+    <AppContext.Provider value={{
+      state, dispatch: dispatchAndSync,
+      getFixed, getTx, getSummary, getByCategory,
+      getBills, getBillsSummary, getCustomFixed,
+      getReminders,
+    }}>
       {children}
     </AppContext.Provider>
   )
