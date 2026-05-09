@@ -1,6 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useApp } from '../../context/AppContext'
 import { INCOME_SOURCES, CATEGORIES, USER, NAPOLES } from '../../constants'
+import { callAI, extractText } from '../../lib/ai'
+import { parseInput } from '../../utils/nlpParser'
+import { isSupabaseConfigured } from '../../lib/supabase'
 import { fmt, uid, todayMonth, monthLabel } from '../../utils/format'
 import { categorize } from '../../utils/categorizer'
 
@@ -156,18 +159,30 @@ Exemplos:
     const system = buildContext(state, getSummary, getByCategory)
 
     try {
-      const resp = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 600,
-          system,
-          messages: apiHistory,
-        }),
-      })
-      const data = await resp.json()
-      const raw  = data.content?.[0]?.text || '{}'
+      // First try local parser (no API needed)
+      const localParsed = parseInput(msg)
+      if (localParsed.type === 'tx' || localParsed.type === 'txs') {
+        const txList = localParsed.type === 'tx' ? [localParsed.tx] : localParsed.txs
+        txList.forEach(tx => dispatch({ type:'ADD_TRANSACTION', month: state.activeMonth, tx }))
+        setLastTxs(txList)
+        const sign = txList[0]?.amount < 0 ? '-' : '+'
+        const reply = txList.length === 1
+          ? JSON.stringify({ mode:'tx', ...txList[0] })
+          : JSON.stringify({ mode:'txs', items:txList, summary:`✅ ${txList.length} lançamentos!` })
+        addMessage({ role:'txs', content:'✅ Registrado!', txData:txList })
+        setLoading(false)
+        return
+      }
+
+      // For questions, need AI — check if configured
+      if (!isSupabaseConfigured()) {
+        addMessage({ role:'assistant', content:'💡 Para responder perguntas, configure o Supabase Edge Function com a chave Anthropic. Para lançar gastos, continue digitando normalmente!' })
+        setLoading(false)
+        return
+      }
+
+      const data = await callAI(apiHistory, system, 600)
+      const raw  = extractText(data) || '{}'
 
       // Strip any markdown fences
       const clean = raw.replace(/```json|```/g,'').trim()

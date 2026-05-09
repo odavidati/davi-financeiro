@@ -43,9 +43,10 @@ function buildFreshState() {
     checklist: {},
     bills: {},
     customFixed: {},  // per-month fixed expense customizations
-    reminders: [],    // { id, title, amount, dueDate, category, icon, repeat, done }
+    reminders: [],       // { id, title, amount, dueDate, category, icon }
+    installments: [],    // { id, description, totalAmount, installmentAmount, totalInstallments, paidCount, startMonth, category, icon, dueDay, active }
     _seeded: true,
-    _version: 2,
+    _version: 3,
   }
 }
 
@@ -63,8 +64,9 @@ function buildLocalState() {
         bills: saved.bills || {},
         customFixed: saved.customFixed || {},
         reminders: saved.reminders || [],
+        installments: saved.installments || [],
         _seeded: true,
-        _version: 2,
+        _version: 3,
       }
     }
   } catch (e) {
@@ -179,6 +181,19 @@ function reducer(state, action) {
       next = { ...state, reminders: (state.reminders||[]).filter(r=>r.id!==action.id) }
       break
     }
+    // ─── Installments ───
+    case 'ADD_INSTALLMENT':
+      next = { ...state, installments: [...(state.installments||[]), action.installment] }
+      break
+    case 'PAY_INSTALLMENT': {
+      const inst = (state.installments||[]).find(i => i.id === action.id)
+      if (!inst) return state
+      next = { ...state, installments: (state.installments||[]).map(i => i.id === action.id ? { ...i, paidCount: Math.min(i.paidCount + 1, i.totalInstallments) } : i) }
+      break
+    }
+    case 'DELETE_INSTALLMENT':
+      next = { ...state, installments: (state.installments||[]).filter(i => i.id !== action.id) }
+      break
     case 'MERGE_REMOTE':
       next = { ...state, transactions: action.transactions??state.transactions, settings: action.settings??state.settings, checklist: action.checklist??state.checklist }
       break
@@ -257,17 +272,29 @@ export function AppProvider({ children, userId }) {
   }, [state.reminders])
 
   const getSummary = useCallback((month) => {
-    const fixed = getFixed(month); const txs = getTx(month)
+    const fixed = getFixed(month)
+    const txs   = getTx(month)
     const fixedTotal = fixed.reduce((s,f) => s+f.amount, 0)
     const expenses   = txs.filter(t => t.amount < 0).reduce((s,t) => s+Math.abs(t.amount), 0)
-    // Variable income = positive transactions (freela, aulas, convites, etc.)
-    const variableIncome = txs.filter(t => t.amount > 0).reduce((s,t) => s+t.amount, 0)
-    // Real income = CLT base salary + variable income this month
-    const cltSalary  = USER.netIncome
+
+    // ── Income calculation (no double-counting) ──
+    // Only count explicitly income-categorised transactions as variable income.
+    // CSV salary deposits (categorised as 'outros') are NOT counted — we use the
+    // hardcoded CLT salary instead. This prevents double-counting.
+    const INCOME_CATS    = ['salario', 'aulas', 'freela', 'convites', 'outros_rec']
+    const EXCLUDE_INCOME = ['investimento'] // RDB redemptions, etc.
+
+    const variableIncome = txs
+      .filter(t => t.amount > 0 && INCOME_CATS.includes(t.category))
+      .reduce((s,t) => s+t.amount, 0)
+
+    // CLT: use hardcoded base salary (we never double-count CSV deposits)
+    const cltSalary   = USER.netIncome
     const totalIncome = cltSalary + variableIncome
-    const totalSpent = fixedTotal + expenses
-    const surplus    = totalIncome - totalSpent
-    const pct        = Math.round((totalSpent / Math.max(totalIncome, 1)) * 100)
+    const totalSpent  = fixedTotal + expenses
+    const surplus     = totalIncome - totalSpent
+    const pct         = Math.round((totalSpent / Math.max(totalIncome, 1)) * 100)
+
     return { fixedTotal, expenses, variableIncome, totalIncome, cltSalary, totalSpent, surplus, pct, net: totalIncome }
   }, [getFixed, getTx])
 
@@ -307,12 +334,28 @@ export function AppProvider({ children, userId }) {
     return { allBills, paid, unpaid, totalPaid, totalUnpaid, pct, allPaid: unpaid.length===0 && allBills.length>0 }
   }, [getFixed, getBills])
 
+  // Returns installments due in a given month
+  const getInstallmentsForMonth = useCallback((month) => {
+    const [y, m] = month.split('-').map(Number)
+    return (state.installments||[]).filter(inst => {
+      if (!inst.active) return false
+      const [sy, sm] = inst.startMonth.split('-').map(Number)
+      const monthsIn = (y - sy) * 12 + (m - sm)
+      return monthsIn >= 0 && monthsIn < inst.totalInstallments
+    }).map(inst => {
+      const [sy, sm] = inst.startMonth.split('-').map(Number)
+      const monthsIn = (y - sy) * 12 + (m - sm)
+      const number = monthsIn + 1
+      return { ...inst, number, isPaid: number <= inst.paidCount }
+    })
+  }, [state.installments])
+
   return (
     <AppContext.Provider value={{
       state, dispatch: dispatchAndSync,
       getFixed, getTx, getSummary, getByCategory,
       getBills, getBillsSummary, getCustomFixed,
-      getReminders,
+      getReminders, getInstallmentsForMonth,
     }}>
       {children}
     </AppContext.Provider>

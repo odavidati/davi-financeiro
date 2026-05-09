@@ -236,11 +236,101 @@ function EditSheet({ tx, month, onClose, onDelete, onUpdate }) {
   )
 }
 
+
+/* ─── Add Installment Sheet ─── */
+function InstallmentSheet({ month, onClose, dispatch }) {
+  const [form, setForm] = useState({
+    description: '',
+    totalAmount: '',
+    installments: '10',
+    category: 'compras',
+    icon: '💳',
+    dueDay: '10',
+  })
+  const set = (k,v) => setForm(p => ({...p,[k]:v}))
+  const ICONS = ['💳','📱','🛋️','✈️','👔','💊','🎓','🚗','🏠','💻','🎮','👟']
+
+  function submit() {
+    const total = parseFloat(form.totalAmount.replace(',','.'))
+    const n = parseInt(form.installments)
+    if (!form.description.trim() || isNaN(total) || total <= 0 || isNaN(n) || n < 1) return
+    dispatch({ type:'ADD_INSTALLMENT', installment: {
+      id: uid(), description: form.description.trim(),
+      totalAmount: total, installmentAmount: Math.round((total/n)*100)/100,
+      totalInstallments: n, paidCount: 0, startMonth: month,
+      category: form.category, icon: form.icon,
+      dueDay: parseInt(form.dueDay)||10, active: true,
+    }})
+    onClose()
+  }
+
+  const total = parseFloat(form.totalAmount.replace(',','.'))
+  const n = parseInt(form.installments)
+  const perMonth = (!isNaN(total) && !isNaN(n) && n > 0) ? Math.round((total/n)*100)/100 : 0
+
+  return (
+    <div className="overlay-backdrop" onClick={onClose}>
+      <div className="sheet" onClick={e => e.stopPropagation()}>
+        <div className="sheet-handle"/>
+        <div className="sheet-title">📅 Compra parcelada</div>
+        <div className="form-group">
+          <label className="form-label">O que você comprou</label>
+          <input className="input" placeholder="ex: Celular, Sofá, Curso…" value={form.description} onChange={e => set('description',e.target.value)} autoFocus/>
+        </div>
+        <div className="grid-2" style={{gap:12,marginBottom:14}}>
+          <div className="form-group" style={{marginBottom:0}}>
+            <label className="form-label">Valor total (R$)</label>
+            <input className="input input-mono" placeholder="0,00" value={form.totalAmount} onChange={e => set('totalAmount',e.target.value)} inputMode="decimal"/>
+          </div>
+          <div className="form-group" style={{marginBottom:0}}>
+            <label className="form-label">Parcelas</label>
+            <input className="input input-mono" placeholder="10" value={form.installments} onChange={e => set('installments',e.target.value)} inputMode="numeric"/>
+          </div>
+        </div>
+
+        {perMonth > 0 && (
+          <div style={{background:'var(--accent-light)',border:'1px solid var(--accent-border)',borderRadius:12,padding:'10px 14px',marginBottom:14,display:'flex',alignItems:'center',gap:10}}>
+            <span style={{fontSize:18}}>💡</span>
+            <div>
+              <div style={{fontSize:13,fontWeight:700,color:'var(--accent)'}}>{fmt(perMonth)}/mês por {n} meses</div>
+              <div style={{fontSize:11,color:'var(--text-muted)'}}>Primeira parcela em {monthLabel(month)}</div>
+            </div>
+          </div>
+        )}
+
+        <div className="grid-2" style={{gap:12,marginBottom:14}}>
+          <div className="form-group" style={{marginBottom:0}}>
+            <label className="form-label">Categoria</label>
+            <select className="input" value={form.category} onChange={e => set('category',e.target.value)}>
+              {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
+            </select>
+          </div>
+          <div className="form-group" style={{marginBottom:0}}>
+            <label className="form-label">Dia vencimento</label>
+            <input className="input input-mono" placeholder="10" value={form.dueDay} onChange={e => set('dueDay',e.target.value)} inputMode="numeric"/>
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Ícone</label>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            {ICONS.map(ic => (
+              <button key={ic} onClick={() => set('icon',ic)} style={{width:38,height:38,borderRadius:9,border:`2px solid ${form.icon===ic?'var(--accent)':'var(--border-md)'}`,background:form.icon===ic?'var(--accent-light)':'var(--bg-elevated)',fontSize:17,cursor:'pointer'}}>{ic}</button>
+            ))}
+          </div>
+        </div>
+        <button className="btn btn-primary btn-full mt-12" onClick={submit}>Cadastrar parcelamento</button>
+      </div>
+    </div>
+  )
+}
+
 /* ─── MAIN SCREEN ─── */
 export default function Gastos() {
   const { state, dispatch, getTx, getFixed, getSummary } = useApp()
   const { activeMonth } = state
   const [showAdd, setShowAdd]       = useState(false)
+  const [showInstall, setShowInstall] = useState(false)
   const [addMode, setAddMode]       = useState('expense')
   const [showImport, setShowImport] = useState(false)
   const [editTx, setEditTx]         = useState(null)
@@ -277,7 +367,12 @@ export default function Gastos() {
       <div className="row gap-8 mb-12">
         <button className="btn btn-primary" style={{flex:2}} onClick={() => openAdd('expense')}>- Gasto</button>
         <button className="btn btn-success" style={{flex:2}} onClick={() => openAdd('income')}>+ Receita</button>
-        <button className="btn btn-ghost" style={{flex:1,fontSize:12}} onClick={() => setShowImport(true)}>📥 CSV</button>
+        <button className="btn btn-ghost" style={{flex:1,fontSize:12}} onClick={() => setShowImport(true)}>📥</button>
+      </div>
+      <div className="row gap-8 mb-12">
+        <button className="btn btn-ghost btn-full" style={{fontSize:13}} onClick={() => setShowInstall(true)}>
+          📅 Cadastrar parcelamento
+        </button>
       </div>
 
       {/* Income summary card */}
@@ -436,6 +531,13 @@ export default function Gastos() {
           mode={addMode}
           onClose={() => setShowAdd(false)}
           onAdd={tx => dispatch({type:'ADD_TRANSACTION',month:activeMonth,tx})}
+        />
+      )}
+      {showInstall && (
+        <InstallmentSheet
+          month={activeMonth}
+          onClose={() => setShowInstall(false)}
+          dispatch={dispatch}
         />
       )}
       {showImport && (
