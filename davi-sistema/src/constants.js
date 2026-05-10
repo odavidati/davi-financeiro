@@ -1,9 +1,13 @@
 export const USER = {
   name: 'Davi da Silva Ramos',
   city: 'Canoas/RS',
-  netIncome: 3390,
+  netIncome: 3390,   // salário líquido base CLT (usado só como referência/estimativa)
   grossIncome: 3900,
 }
+
+// Saldo inicial da reserva (RDB Nubank) antes de Janeiro/2026
+// Calculado com base nos movimentos jan-mai e saldo atual ~R$600
+export const RDB_INITIAL_BALANCE = 668
 
 // ─── NÁPOLES 407A ───
 export const NAPOLES = {

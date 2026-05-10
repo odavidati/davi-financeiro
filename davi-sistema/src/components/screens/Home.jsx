@@ -252,21 +252,26 @@ export default function Home({ onImpulse, onGoToContas, onOpenConfig }) {
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:14}}>
           <div style={{background:'rgba(255,255,255,0.06)',borderRadius:12,padding:'10px 12px'}}>
             <div style={{fontSize:10,color:'rgba(255,255,255,0.35)',marginBottom:3}}>
-              Despesas{summary.hasTx ? '' : ' (est.)'}
+              {summary.salary > 0 ? 'Salário recebido' : 'Salário CLT (base)'}
             </div>
-            <div style={{fontFamily:'DM Mono',fontSize:13,fontWeight:500,color:'#F87171'}}>
-              -{fmt(summary.hasTx ? summary.expenses : summary.fixedBudget)}
+            <div style={{fontFamily:'DM Mono',fontSize:13,fontWeight:500,color:'#4ADE80'}}>
+              +{fmt(summary.salary > 0 ? summary.salary : USER.netIncome)}
             </div>
           </div>
           <div style={{background:'rgba(255,255,255,0.06)',borderRadius:12,padding:'10px 12px'}}>
-            <div style={{fontSize:10,color:'rgba(255,255,255,0.35)',marginBottom:3}}>
-              Receita total
-            </div>
-            <div style={{fontFamily:'DM Mono',fontSize:13,fontWeight:500,color:'#4ADE80'}}>
-              +{fmt(summary.totalIncome)}
+            <div style={{fontSize:10,color:'rgba(255,255,255,0.35)',marginBottom:3}}>Gastos reais</div>
+            <div style={{fontFamily:'DM Mono',fontSize:13,fontWeight:500,color:'#F87171'}}>
+              -{fmt(summary.expenses)}
             </div>
           </div>
         </div>
+        {summary.rdbResgates > 0 && (
+          <div style={{marginTop:8,padding:'7px 10px',background:'rgba(251,191,36,0.1)',borderRadius:10,border:'1px solid rgba(251,191,36,0.2)'}}>
+            <div style={{fontSize:10,color:'rgba(251,191,36,0.9)',fontWeight:600}}>
+              ⚠️ Usou R${summary.rdbResgates.toFixed(0)} da reserva de emergência este mês
+            </div>
+          </div>
+        )}
       </div>
 
       {/* AI widget */}

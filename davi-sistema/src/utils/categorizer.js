@@ -1,53 +1,118 @@
-const RULES = [
-  {
-    category: 'transporte',
-    keywords: ['uber','99 tecnologia','99pop','99taxi','via nupay - uber','via nupay - 99','cabify','buser','onibus','metro','trem','passagem','estacionamento','pedagio','shell','petrobras','posto ','combustivel','gasolina'],
-  },
-  {
-    category: 'alimentacao',
-    keywords: ['ifood','via nupay - ifood','rappi','ubereats','delivery','restaurante','lanchonete','pizzaria','hamburger','burguer','subway','mcdonalds','mcdonald','bk ','burger king','sushi','temaki','churrasco','padaria','confeitaria','cafeteria','starbucks','supermercado','mercado','atacadao','assai','carrefour','extra ','walmart','dia ','hipermercado','hortifruti','sacolao','feira','viezzer','buffon','restaurante','bar e'],
-  },
-  {
-    category: 'assinaturas',
-    keywords: ['spotify','netflix','amazon prime','prime video','apple ','icloud','google one','youtube premium','disney','hbo','paramount','deezer','openai','anthropic','chatgpt','claude','notion','canva','adobe','figma','microsoft 365','office 365','dropbox','lastpass','1password','nordvpn','expressvpn','cursor','github copilot','adyen latin america'],
-  },
-  {
-    category: 'saude',
-    keywords: ['psicologo','psicolog','farmacia','drogaria','droga ','ultrafarma','medifarma','medico','hospital','clinica','laboratorio','dentista','odonto','fisioterapeuta','academia','smartfit','bluefit','bodytech','biolab','unimed','amil','hapvida','sulamerica saude','drogasil','pacheco','raia '],
-  },
-  {
-    category: 'energia',
-    keywords: ['rge ','rge sul','rge -','cpfl','corsan','sabesp','cemig','coelba','energisa','celpe','copasa','cosern','gas natural','comgas'],
-  },
-  {
-    category: 'moradia',
-    keywords: ['condominio','aluguel','claro -','claro ','oi fiber','net combo','vivo fibra','giga+','tim live','sky ','iptu','seguro residencial','seguro imovel','hair pub','barbearia','cabelereiro'],
-  },
-  {
-    category: 'imovel',
-    keywords: ['napoles','napolis','caixa economica','cef ','mrv','construtora','incorporadora','registro de imovel','cartorio','engefortes'],
-  },
-  {
-    category: 'investimento',
-    keywords: ['aplicacao rdb','aplicação rdb','resgate rdb','rendimento','cdb','lci','lca','tesouro direto','fundo de investimento','renda fixa'],
-  },
-  {
-    category: 'lazer',
-    keywords: ['cinema','ingresso','show ','teatro','steam','playstation','xbox','nintendo','nuuvem','green man gaming','humble bundle','twitch','kickstarter','booking','airbnb','hotel','pousada','viagem','passagem aerea','latam','gol ','azul '],
-  },
-  {
-    category: 'compras',
-    keywords: ['amazon.com','mercado livre','mercadolivre','shopee','americanas','casas bahia','magazine luiza','magalu','renner','riachuelo','zara','hm ','centauro','netshoes','kabum','aliexpress','shein','wish ','midway','senffnet','shpp brasil','pix marketplace'],
-  },
-]
+/**
+ * Categorizer — versão específica para Davi da Silva Ramos
+ * Mantém regras genéricas + regras específicas dos padrões identificados nos extratos
+ */
+export function categorize(description, amount = 0) {
+  if (!description) return amount > 0 ? 'outros_rec' : 'outros'
+  const d = description.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
 
-export function categorize(description) {
-  if (!description) return 'outros'
-  const lower = description.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-  for (const rule of RULES) {
-    for (const kw of rule.keywords) {
-      if (lower.includes(kw)) return rule.category
-    }
-  }
+  // ── RDB ──
+  if (/aplicac.o rdb|aplicação rdb/.test(d)) return 'rdb_aplicacao'
+  if (/resgate rdb/.test(d)) return 'rdb_resgate'
+
+  // ── Empresa encerrada ──
+  if (description.includes('62.498.088')) return 'empresa_encerrada'
+
+  // ── Salário / receitas ──
+  if (/transferencia recebida/.test(d) && description.includes('•••.393.060') && amount > 0) return 'salario'
+  if (/deposito de emprestimo|depósito de emprestimo/.test(d)) return 'emprestimo'
+
+  // ── Estornos ──
+  if (/^estorno/.test(d)) return 'estorno'
+
+  // ── Psicóloga ──
+  if (/rosenara bohrer/.test(d)) return 'saude'
+
+  // ── Energia ──
+  if (/\brge\b/.test(d) || /02\.016\.440/.test(description)) return 'energia'
+
+  // ── Internet ──
+  if (/claro/.test(d)) return 'moradia'
+
+  // ── Senff ──
+  if (/senffnet/.test(d)) return 'alimentacao'
+
+  // ── Streaming ──
+  if (/netflix/.test(d)) return 'assinaturas'
+  if (/spotify/.test(d)) return 'assinaturas'
+  if (/amazon prime|prime video/.test(d)) return 'assinaturas'
+  if (/youtube premium/.test(d)) return 'assinaturas'
+  if (/disney/.test(d)) return 'assinaturas'
+
+  // ── Saúde ──
+  if (/dr\.? central|19\.013\.906/.test(d)) return 'saude'
+  if (/pagar me pagamentos|18\.727\.053/.test(d)) return 'saude'
+  if (/rosenara|psicologo|psicolog/.test(d)) return 'saude'
+  if (/farmacia|farmácia|drogaria|drogasil|sao joao farmacias|são joão farmacias/.test(d)) return 'saude'
+  if (/rudimar pacheco/.test(d)) return 'saude'
+
+  // ── IA Tools / Google One ──
+  if (/carlos eduardo pardal gil/.test(d)) return 'assinaturas'
+
+  // ── Outras assinaturas ──
+  if (/bytedance|tiktok/.test(d)) return 'assinaturas'
+  if (/hostgator|15\.754\.475/.test(d)) return 'assinaturas'
+  if (/openai|anthropic|chatgpt|claude|notion|canva|adobe|figma|github/.test(d)) return 'assinaturas'
+  if (/icloud|apple/.test(d)) return 'assinaturas'
+  if (/google one/.test(d)) return 'assinaturas'
+  if (/uber \*one|uber one membership/.test(d)) return 'assinaturas'
+
+  // ── Contadora ──
+  if (/poliana rafaela/.test(d)) return 'outros'
+
+  // ── Riachuelo / Midway ──
+  if (/midway/.test(d)) return 'compras'
+
+  // ── Alesta ──
+  if (/alesta/.test(d)) return 'outros'
+
+  // ── Kiwify / Hotmart ──
+  if (/kiwify|hotmart/.test(d)) return 'outros'
+
+  // ── Shopee ──
+  if (/shpp brasil|shopee/.test(d)) return 'compras'
+
+  // ── Receita Federal ──
+  if (/receita federal/.test(d)) return 'outros'
+
+  // ── Moto / veículo ──
+  if (/farrapos casa da moto|cia da moto/.test(d)) return 'transporte'
+  if (/shell|petrobras|ipiranga|posto /.test(d)) return 'transporte'
+
+  // ── Transporte ──
+  if (/\buber\b/.test(d) || /nupay - uber/.test(d) || /uber \*trip/.test(d)) return 'transporte'
+  if (/\b99\b|99pop|99taxi|nupay - 99/.test(d)) return 'transporte'
+  if (/cabify|buser|passagem|onibus|metro/.test(d)) return 'transporte'
+
+  // ── Delivery ──
+  if (/ifood|99food|ifd\*|nupay - ifood/.test(d)) return 'alimentacao'
+  if (/ubereats|rappi/.test(d)) return 'alimentacao'
+
+  // ── Restaurantes / Alimentação ──
+  if (/restaurante|pizzaria|fama pizza|lanches|petiskeira|buffon|cantina|burger|kiosque|kiosk/.test(d)) return 'alimentacao'
+  if (/zamp s.a|13\.574\.594/.test(d)) return 'alimentacao' // Burger King rede
+  if (/viezzer|centerpan|fruteira victor|apolo filial|abastecedora/.test(d)) return 'alimentacao'
+  if (/supermercado|mercado|atacadao|assai|carrefour|extra |walmart/.test(d)) return 'alimentacao'
+  if (/padaria|panificadora/.test(d)) return 'alimentacao'
+
+  // ── Imóvel / Nápoles ──
+  if (/napoles|engefortes/.test(d)) return 'imovel'
+  if (/caixa economica/.test(d)) return 'imovel'
+
+  // ── Moradia (pagamentos ao Vicente) ──
+  if (/marcelo vicente pereira/.test(d) && amount < 0) return 'moradia'
+
+  // ── PIX marketplace ──
+  if (/pix marketplace/.test(d)) return 'compras'
+
+  // ── Adyen (compras online) ──
+  if (/adyen/.test(d)) return 'compras'
+
+  // ── Pagamento de fatura/boleto ──
+  if (/pagamento de fatura|pagamento de boleto/.test(d)) return 'compras'
+
+  // ── Receitas ──
+  if (amount > 0) return 'outros_rec'
+
   return 'outros'
 }

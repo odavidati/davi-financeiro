@@ -1,5 +1,5 @@
 import { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react'
-import { DEFAULT_FIXED, PRESET_BILLS, CATEGORIES, INCOME_SOURCES, USER } from '../constants'
+import { DEFAULT_FIXED, PRESET_BILLS, CATEGORIES, INCOME_SOURCES, USER, RDB_INITIAL_BALANCE } from '../constants'
 import { loadState, saveState, clearState } from '../utils/storage'
 import { todayMonth } from '../utils/format'
 import { categorize } from '../utils/categorizer'
@@ -42,7 +42,7 @@ function buildFreshState() {
   return {
     activeMonth: todayMonth(),
     transactions: seeded,
-    settings: { ccsEmitted: false, emergencyFundCurrent: 0, emergencyFundGoal: 8000, theme: 'light' },
+    settings: { ccsEmitted: false, emergencyFundCurrent: 600, emergencyFundGoal: 8000, rdbInitialBalance: RDB_INITIAL_BALANCE, theme: 'light' },
     checklist: {},
     bills: {},
     customFixed: {},  // per-month fixed expense customizations
@@ -287,45 +287,64 @@ export function AppProvider({ children, userId }) {
   }, [state.reminders])
 
   const getSummary = useCallback((month) => {
-    const fixed = getFixed(month)
-    const txs   = getTx(month)
+    const txs = getTx(month)
 
-    // Fixed expenses list (for display/budget reference only)
-    const fixedBudget = fixed.reduce((s,f) => s+f.amount, 0)
+    // ── INCOME ──
+    // salary: transactions tagged 'salario'
+    const salary = txs
+      .filter(t => t.amount > 0 && t.category === 'salario')
+      .reduce((s,t) => s+t.amount, 0)
 
-    // ── REAL SPENDING = only from actual transactions (CSV + manual) ──
-    // NEVER add fixedBudget to totalSpent — CSV already contains those payments.
-    // Double-counting example: Netflix in fixedList AND in CSV = counted twice without this fix.
-    const expenses = txs.filter(t => t.amount < 0).reduce((s,t) => s+Math.abs(t.amount), 0)
-
-    // ── INCOME: CLT salary + explicitly-tagged variable income ──
-    // Do NOT count generic positive transactions (CSV salary deposits tagged 'outros')
-    // — those would double-count the hardcoded CLT salary.
-    const INCOME_CATS = ['salario', 'aulas', 'freela', 'convites', 'outros_rec']
+    // variable income: aulas, freela, convites, outros_rec, emprestimo
+    // (excludes rdb_resgate — reserve withdrawals are NOT income)
+    const INCOME_CATS = ['aulas','freela','convites','outros_rec','emprestimo']
     const variableIncome = txs
       .filter(t => t.amount > 0 && INCOME_CATS.includes(t.category))
       .reduce((s,t) => s+t.amount, 0)
 
-    const cltSalary   = USER.netIncome
-    const totalIncome = cltSalary + variableIncome
+    // RDB movements (separate from regular income/expense)
+    const rdbResgates = txs
+      .filter(t => t.category === 'rdb_resgate')
+      .reduce((s,t) => s+t.amount, 0)
+    const rdbAplicacoes = txs
+      .filter(t => t.category === 'rdb_aplicacao')
+      .reduce((s,t) => s+Math.abs(t.amount), 0)
 
-    // totalSpent = ONLY real transactions (not the budget reference list)
-    const totalSpent = expenses
-    const surplus    = totalIncome - totalSpent
-    const pct        = Math.round((totalSpent / Math.max(totalIncome, 1)) * 100)
+    // ── EXPENSES ──
+    // Only real expenses: exclude rdb_aplicacao, empresa_encerrada, rdb_resgate (credits)
+    const EXCLUDE_CATS = ['rdb_aplicacao','rdb_resgate','empresa_encerrada','salario','aulas','freela','convites','outros_rec','emprestimo','estorno']
+    const expenses = txs
+      .filter(t => t.amount < 0 && !EXCLUDE_CATS.includes(t.category) && t.exclude !== true)
+      .reduce((s,t) => s+Math.abs(t.amount), 0)
+
+    // Also count explicit variable income (manual entries) we tagged
+    const totalIncome = salary + variableIncome
+    // If no salary was recorded (empty month or future), use CLT base as estimate
+    const effectiveIncome = totalIncome > 0 ? totalIncome : (txs.length === 0 ? USER.netIncome : totalIncome)
+
+    const surplus = effectiveIncome - expenses
+    const pct     = Math.round((expenses / Math.max(effectiveIncome, 1)) * 100)
+
+    // Fixed budget reference (for display in Config/analysis)
+    const fixed       = getFixed(month)
+    const fixedBudget = fixed.reduce((s,f) => s+f.amount, 0)
 
     return {
-      fixedBudget,   // reference only — what the fixed list adds up to
-      fixedTotal: fixedBudget, // keep alias for components that use it
-      expenses,
+      salary,
       variableIncome,
-      totalIncome,
-      cltSalary,
-      totalSpent,
+      totalIncome: effectiveIncome,
+      cltSalary: salary,
+      expenses,
+      fixedBudget,
+      fixedTotal: fixedBudget,
+      totalSpent: expenses,
       surplus,
       pct,
-      net: totalIncome,
-      hasTx: txs.length > 0, // helps UI show "estimated" vs "real"
+      net: effectiveIncome,
+      rdbResgates,
+      rdbAplicacoes,
+      hasTx: txs.length > 0,
+      isEstimated: totalIncome === 0 && txs.length === 0,
     }
   }, [getFixed, getTx])
 
