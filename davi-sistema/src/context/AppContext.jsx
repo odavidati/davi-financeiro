@@ -31,6 +31,9 @@ function getEffectiveFixed(month, customFixed) {
   ]
 }
 
+// ─── Schema version — bump to force cache clear on all clients ───
+const STATE_VERSION = 10
+
 function buildFreshState() {
   const seeded = {}
   for (const [month, txs] of Object.entries(SEED_TRANSACTIONS)) {
@@ -46,14 +49,23 @@ function buildFreshState() {
     reminders: [],       // { id, title, amount, dueDate, category, icon }
     installments: [],    // { id, description, totalAmount, installmentAmount, totalInstallments, paidCount, startMonth, category, icon, dueDay, active }
     _seeded: true,
-    _version: 3,
+    _version: STATE_VERSION,
   }
 }
 
 function buildLocalState() {
   try {
     const saved = loadState()
-    if (saved && saved._seeded && saved.transactions && typeof saved.transactions === 'object') {
+    // Only reuse saved state if it has the current version AND real transaction data
+    if (
+      saved &&
+      saved._version === STATE_VERSION &&
+      saved._seeded &&
+      saved.transactions &&
+      typeof saved.transactions === 'object' &&
+      // Sanity check: must have at least one real month of data
+      Object.keys(saved.transactions).length >= 5
+    ) {
       const theme = saved.settings?.theme || 'light'
       document.documentElement.setAttribute('data-theme', theme)
       return {
@@ -66,13 +78,14 @@ function buildLocalState() {
         reminders: saved.reminders || [],
         installments: saved.installments || [],
         _seeded: true,
-        _version: 3,
+        _version: STATE_VERSION,
       }
     }
   } catch (e) {
-    console.warn('State load failed, rebuilding:', e)
-    try { clearState() } catch {}
+    console.warn('State load failed, rebuilding from scratch:', e)
   }
+  // Clear whatever was there (old version / corrupt / missing data)
+  try { clearState() } catch {}
   const fresh = buildFreshState()
   document.documentElement.setAttribute('data-theme', 'light')
   saveState(fresh)
@@ -200,7 +213,9 @@ function reducer(state, action) {
     case 'RESET':
       clearState()
       document.documentElement.setAttribute('data-theme', 'light')
+      clearState()
       next = buildFreshState()
+      next._version = STATE_VERSION
       saveState(next)
       break
     default:
@@ -274,28 +289,44 @@ export function AppProvider({ children, userId }) {
   const getSummary = useCallback((month) => {
     const fixed = getFixed(month)
     const txs   = getTx(month)
-    const fixedTotal = fixed.reduce((s,f) => s+f.amount, 0)
-    const expenses   = txs.filter(t => t.amount < 0).reduce((s,t) => s+Math.abs(t.amount), 0)
 
-    // ── Income calculation (no double-counting) ──
-    // Only count explicitly income-categorised transactions as variable income.
-    // CSV salary deposits (categorised as 'outros') are NOT counted — we use the
-    // hardcoded CLT salary instead. This prevents double-counting.
-    const INCOME_CATS    = ['salario', 'aulas', 'freela', 'convites', 'outros_rec']
-    const EXCLUDE_INCOME = ['investimento'] // RDB redemptions, etc.
+    // Fixed expenses list (for display/budget reference only)
+    const fixedBudget = fixed.reduce((s,f) => s+f.amount, 0)
 
+    // ── REAL SPENDING = only from actual transactions (CSV + manual) ──
+    // NEVER add fixedBudget to totalSpent — CSV already contains those payments.
+    // Double-counting example: Netflix in fixedList AND in CSV = counted twice without this fix.
+    const expenses = txs.filter(t => t.amount < 0).reduce((s,t) => s+Math.abs(t.amount), 0)
+
+    // ── INCOME: CLT salary + explicitly-tagged variable income ──
+    // Do NOT count generic positive transactions (CSV salary deposits tagged 'outros')
+    // — those would double-count the hardcoded CLT salary.
+    const INCOME_CATS = ['salario', 'aulas', 'freela', 'convites', 'outros_rec']
     const variableIncome = txs
       .filter(t => t.amount > 0 && INCOME_CATS.includes(t.category))
       .reduce((s,t) => s+t.amount, 0)
 
-    // CLT: use hardcoded base salary (we never double-count CSV deposits)
     const cltSalary   = USER.netIncome
     const totalIncome = cltSalary + variableIncome
-    const totalSpent  = fixedTotal + expenses
-    const surplus     = totalIncome - totalSpent
-    const pct         = Math.round((totalSpent / Math.max(totalIncome, 1)) * 100)
 
-    return { fixedTotal, expenses, variableIncome, totalIncome, cltSalary, totalSpent, surplus, pct, net: totalIncome }
+    // totalSpent = ONLY real transactions (not the budget reference list)
+    const totalSpent = expenses
+    const surplus    = totalIncome - totalSpent
+    const pct        = Math.round((totalSpent / Math.max(totalIncome, 1)) * 100)
+
+    return {
+      fixedBudget,   // reference only — what the fixed list adds up to
+      fixedTotal: fixedBudget, // keep alias for components that use it
+      expenses,
+      variableIncome,
+      totalIncome,
+      cltSalary,
+      totalSpent,
+      surplus,
+      pct,
+      net: totalIncome,
+      hasTx: txs.length > 0, // helps UI show "estimated" vs "real"
+    }
   }, [getFixed, getTx])
 
   const getByCategory = useCallback((month) => {
@@ -314,15 +345,15 @@ export function AppProvider({ children, userId }) {
     return Object.values(map).filter(c => c.total > 0).sort((a,b) => b.total - a.total)
   }, [getFixed, getTx])
 
-  // Bills for a month: fixed + presets + custom
+  // Bills for a month: ONLY preset special bills + custom manual bills
+  // Fixed expenses (Netflix, internet etc) are tracked via CSV transactions in Gastos
+  // — they should NOT appear as separate checklist items here to avoid confusion.
   const getBillsSummary = useCallback((month) => {
-    const fixed = getFixed(month)
     const billStatus = getBills(month)
-    const custom = billStatus._custom || []
-    // Get preset bills for this month
+    const custom  = billStatus._custom || []
+    // Only preset special bills for this month (Shopee, Senff, IA Tools, etc.)
     const presets = PRESET_BILLS.filter(b => b.month === month)
     const allBills = [
-      ...fixed.map(f => ({ ...f, billId: f.id, isPaid: !!(billStatus[f.id]?.paid), paidDate: billStatus[f.id]?.paidDate, isFixed: true })),
       ...presets.map(b => ({ ...b, billId: b.id, isPaid: !!(billStatus[b.id]?.paid), paidDate: billStatus[b.id]?.paidDate, isPreset: true })),
       ...custom.map(b => ({ ...b, billId: b.id, isPaid: !!(billStatus[b.id]?.paid), paidDate: billStatus[b.id]?.paidDate })),
     ]
@@ -332,7 +363,7 @@ export function AppProvider({ children, userId }) {
     const totalUnpaid = unpaid.reduce((s,b) => s+b.amount, 0)
     const pct = allBills.length > 0 ? Math.round((paid.length/allBills.length)*100) : 0
     return { allBills, paid, unpaid, totalPaid, totalUnpaid, pct, allPaid: unpaid.length===0 && allBills.length>0 }
-  }, [getFixed, getBills])
+  }, [getBills])
 
   // Returns installments due in a given month
   const getInstallmentsForMonth = useCallback((month) => {

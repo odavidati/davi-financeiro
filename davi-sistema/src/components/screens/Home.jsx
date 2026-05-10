@@ -250,12 +250,22 @@ export default function Home({ onImpulse, onGoToContas, onOpenConfig }) {
           <Ring pct={summary.pct}/>
         </div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:14}}>
-          {[{l:'Fixos',v:`-${fmt(summary.fixedTotal)}`,c:'rgba(255,255,255,0.65)'},{l:'Variáveis',v:`-${fmt(summary.expenses)}`,c:'#F87171'}].map((s,i) => (
-            <div key={i} style={{background:'rgba(255,255,255,0.06)',borderRadius:12,padding:'10px 12px'}}>
-              <div style={{fontSize:10,color:'rgba(255,255,255,0.35)',marginBottom:3}}>{s.l}</div>
-              <div style={{fontFamily:'DM Mono',fontSize:13,fontWeight:500,color:s.c}}>{s.v}</div>
+          <div style={{background:'rgba(255,255,255,0.06)',borderRadius:12,padding:'10px 12px'}}>
+            <div style={{fontSize:10,color:'rgba(255,255,255,0.35)',marginBottom:3}}>
+              Despesas{summary.hasTx ? '' : ' (est.)'}
             </div>
-          ))}
+            <div style={{fontFamily:'DM Mono',fontSize:13,fontWeight:500,color:'#F87171'}}>
+              -{fmt(summary.hasTx ? summary.expenses : summary.fixedBudget)}
+            </div>
+          </div>
+          <div style={{background:'rgba(255,255,255,0.06)',borderRadius:12,padding:'10px 12px'}}>
+            <div style={{fontSize:10,color:'rgba(255,255,255,0.35)',marginBottom:3}}>
+              Receita total
+            </div>
+            <div style={{fontFamily:'DM Mono',fontSize:13,fontWeight:500,color:'#4ADE80'}}>
+              +{fmt(summary.totalIncome)}
+            </div>
+          </div>
         </div>
       </div>
 

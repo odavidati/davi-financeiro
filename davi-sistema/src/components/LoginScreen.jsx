@@ -3,144 +3,175 @@ import { useAuth } from '../context/AuthContext'
 import { isSupabaseConfigured } from '../lib/supabase'
 
 export default function LoginScreen() {
-  const { sendMagicLink } = useAuth()
-  const [email, setEmail]   = useState('daviramosrs@gmail.com')
-  const [status, setStatus] = useState('idle') // idle | sending | sent | error
-  const [errMsg, setErrMsg] = useState('')
+  const { signInWithPassword, signUp, sendMagicLink, resetPassword } = useAuth()
 
-  async function handleSubmit() {
-    if (!email.trim()) return
-    setStatus('sending')
-    const error = await sendMagicLink(email.trim())
-    if (error) {
-      setErrMsg(error.message)
-      setStatus('error')
-    } else {
-      setStatus('sent')
-    }
-  }
+  const [mode, setMode]     = useState('login')   // login | signup | magic | reset
+  const [email, setEmail]   = useState('daviramosrs@gmail.com')
+  const [password, setPass] = useState('')
+  const [status, setStatus] = useState('idle')    // idle | loading | sent | error | success
+  const [msg, setMsg]       = useState('')
 
   const configured = isSupabaseConfigured()
 
-  return (
-    <div style={{
-      height: '100%',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: '32px 24px',
-      background: 'var(--bg)',
-      maxWidth: 480,
-      margin: '0 auto',
-    }}>
-      {/* Logo / título */}
-      <div style={{ textAlign: 'center', marginBottom: 40 }}>
-        <div style={{ fontSize: 52, marginBottom: 16 }}>💰</div>
-        <h1 style={{
-          fontSize: 26, fontWeight: 800, color: 'var(--text)',
-          letterSpacing: '-0.5px', marginBottom: 8,
-        }}>
-          Davi Finance
-        </h1>
-        <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-          Controle financeiro pessoal
+  async function handleLogin(e) {
+    e?.preventDefault()
+    if (!email || !password) return
+    setStatus('loading')
+    const error = await signInWithPassword(email.trim(), password)
+    if (error) {
+      if (error.message?.toLowerCase().includes('invalid')) {
+        setMsg('Email ou senha incorretos.')
+      } else {
+        setMsg(error.message)
+      }
+      setStatus('error')
+    }
+    // On success, AuthContext updates user → App redirects automatically
+  }
+
+  async function handleSignUp(e) {
+    e?.preventDefault()
+    if (!email || !password) return
+    setStatus('loading')
+    const error = await signUp(email.trim(), password)
+    if (error) { setMsg(error.message); setStatus('error') }
+    else { setStatus('success'); setMsg('Conta criada! Verifique seu email e confirme, depois entre com sua senha.') }
+  }
+
+  async function handleMagicLink() {
+    if (!email) return
+    setStatus('loading')
+    const error = await sendMagicLink(email.trim())
+    if (error) { setMsg(error.message); setStatus('error') }
+    else { setStatus('sent') }
+  }
+
+  async function handleReset() {
+    if (!email) return
+    setStatus('loading')
+    const error = await resetPassword(email.trim())
+    if (error) { setMsg(error.message); setStatus('error') }
+    else { setStatus('sent'); setMsg('Link de redefinição enviado para ' + email) }
+  }
+
+  if (!configured) {
+    return (
+      <div style={{ height:'100%', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'32px 24px', background:'var(--bg)' }}>
+        <div style={{ fontSize:52, marginBottom:20 }}>💰</div>
+        <h1 style={{ fontSize:24, fontWeight:800, marginBottom:8, letterSpacing:'-0.5px' }}>Davi Finance</h1>
+        <p style={{ fontSize:13, color:'var(--text-secondary)', textAlign:'center', lineHeight:1.6, marginBottom:24 }}>
+          Supabase não configurado. Adicione as variáveis no Vercel.
         </p>
+        <div style={{ background:'var(--warning-dim)', border:'1px solid rgba(243,156,18,0.2)', borderRadius:14, padding:'14px 16px', width:'100%' }}>
+          <div style={{ fontSize:12, fontWeight:700, color:'var(--warning)', marginBottom:6 }}>Variáveis necessárias:</div>
+          <div style={{ fontFamily:'DM Mono', fontSize:11, color:'var(--text-secondary)', lineHeight:2 }}>
+            VITE_SUPABASE_URL<br/>VITE_SUPABASE_ANON_KEY
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ height:'100%', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'24px', background:'var(--bg)' }}>
+      {/* Logo */}
+      <div style={{ textAlign:'center', marginBottom:32 }}>
+        <div style={{ fontSize:50, marginBottom:14 }}>💰</div>
+        <h1 style={{ fontSize:26, fontWeight:800, letterSpacing:'-0.5px', marginBottom:6 }}>Davi Finance</h1>
+        <p style={{ fontSize:13, color:'var(--text-secondary)' }}>Controle financeiro pessoal</p>
       </div>
 
-      {!configured ? (
-        /* Supabase não configurado — mostra aviso */
-        <div style={{
-          background: 'var(--warning-dim)', border: '1px solid rgba(251,191,36,0.25)',
-          borderRadius: 14, padding: '18px 16px', width: '100%', textAlign: 'center',
-        }}>
-          <div style={{ fontSize: 28, marginBottom: 10 }}>⚠️</div>
-          <div style={{ fontSize: 14, color: 'var(--warning)', fontWeight: 700, marginBottom: 6 }}>
-            Supabase não configurado
-          </div>
-          <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-            Adicione <code style={{ fontFamily: 'DM Mono', fontSize: 12, color: 'var(--accent)' }}>VITE_SUPABASE_URL</code> e{' '}
-            <code style={{ fontFamily: 'DM Mono', fontSize: 12, color: 'var(--accent)' }}>VITE_SUPABASE_ANON_KEY</code> nas variáveis de ambiente do Vercel.
-          </div>
-        </div>
-      ) : status === 'sent' ? (
-        /* Link enviado */
-        <div style={{ textAlign: 'center', width: '100%' }}>
-          <div style={{
-            background: 'var(--success-dim)', border: '1px solid rgba(74,222,128,0.2)',
-            borderRadius: 18, padding: '28px 20px', marginBottom: 20,
-          }}>
-            <div style={{ fontSize: 44, marginBottom: 12 }}>📨</div>
-            <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--success)', marginBottom: 8 }}>
-              Link enviado!
-            </div>
-            <div style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-              Abre o email <strong style={{ color: 'var(--text)' }}>{email}</strong> e clica no link mágico para entrar.
-            </div>
-          </div>
-          <p style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-            O link é válido por 1 hora. Após clicar, você entra automaticamente em todos os dispositivos.
-          </p>
-          <button
-            className="btn btn-ghost btn-full"
-            style={{ marginTop: 16 }}
-            onClick={() => setStatus('idle')}
-          >
-            Reenviar
-          </button>
-        </div>
-      ) : (
-        /* Formulário de login */
-        <div style={{ width: '100%' }}>
-          <div style={{
-            background: 'var(--bg-card)', border: '1px solid var(--border-md)',
-            borderRadius: 20, padding: '24px 20px', marginBottom: 20,
-          }}>
-            <div className="form-group" style={{ marginBottom: 20 }}>
-              <label className="form-label">Seu email</label>
-              <input
-                className="input"
-                type="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                placeholder="seuemail@gmail.com"
-                autoComplete="email"
-                onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-                style={{ fontSize: 16 }}
-              />
-            </div>
-
-            <button
-              className="btn btn-primary btn-full"
-              onClick={handleSubmit}
-              disabled={status === 'sending'}
-              style={{ fontSize: 15, padding: '14px' }}
-            >
-              {status === 'sending' ? '⏳ Enviando...' : '✉️ Entrar com link mágico'}
+      <div style={{ width:'100%', maxWidth:380 }}>
+        {/* Mode tabs */}
+        <div style={{ display:'flex', gap:6, marginBottom:20, background:'var(--bg-elevated)', borderRadius:14, padding:4 }}>
+          {[{id:'login',l:'Entrar'},{id:'signup',l:'Criar conta'}].map(t => (
+            <button key={t.id} onClick={() => { setMode(t.id); setStatus('idle'); setMsg('') }}
+              style={{ flex:1, padding:'9px', borderRadius:10, border:'none', cursor:'pointer', fontSize:13, fontWeight:700, transition:'all 0.15s',
+                background: mode===t.id ? 'var(--bg-card)' : 'transparent',
+                color: mode===t.id ? 'var(--accent)' : 'var(--text-muted)',
+                boxShadow: mode===t.id ? 'var(--shadow-sm)' : 'none',
+              }}>
+              {t.l}
             </button>
+          ))}
+        </div>
+
+        {/* Form */}
+        <form onSubmit={mode==='login' ? handleLogin : handleSignUp}>
+          <div className="form-group">
+            <label className="form-label">Email</label>
+            <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)}
+              placeholder="seu@email.com" autoComplete="email" style={{fontSize:15}}/>
           </div>
 
-          {status === 'error' && (
-            <div className="alert alert-danger">
-              <span className="alert-icon">❌</span>
-              <span className="fs-13">{errMsg}</span>
+          {(mode === 'login' || mode === 'signup') && (
+            <div className="form-group">
+              <label className="form-label">Senha</label>
+              <input className="input" type="password" value={password} onChange={e => setPass(e.target.value)}
+                placeholder={mode==='signup' ? 'Mínimo 6 caracteres' : '••••••••'}
+                autoComplete={mode==='login' ? 'current-password' : 'new-password'}
+                style={{fontSize:15}}/>
             </div>
           )}
 
-          <div style={{
-            background: 'var(--bg-card)', border: '1px solid var(--border)',
-            borderRadius: 14, padding: '14px 16px',
-          }}>
-            <div className="fs-12 c-muted lh-14" style={{ lineHeight: 1.6 }}>
-              <div className="fw-600 c-secondary mb-6">Como funciona:</div>
-              <div>1. Digite seu email e clica no botão</div>
-              <div>2. Você recebe um link no email</div>
-              <div>3. Clica no link — já entra, sem senha</div>
-              <div>4. No celular e no Mac usa o mesmo email → dados sincronizados ✅</div>
+          {/* Error / success */}
+          {status === 'error' && (
+            <div style={{ padding:'10px 13px', background:'var(--danger-dim)', border:'1px solid rgba(231,76,60,0.2)', borderRadius:12, fontSize:13, color:'var(--danger)', marginBottom:14 }}>
+              ❌ {msg}
             </div>
+          )}
+          {(status === 'success' || status === 'sent') && (
+            <div style={{ padding:'10px 13px', background:'var(--success-dim)', border:'1px solid rgba(0,184,148,0.2)', borderRadius:12, fontSize:13, color:'var(--success)', marginBottom:14 }}>
+              ✅ {msg || 'Link enviado para ' + email}
+            </div>
+          )}
+
+          {/* Primary button */}
+          {(mode === 'login' || mode === 'signup') && (
+            <button type="submit" className="btn btn-primary btn-full"
+              disabled={!email || !password || status==='loading'}
+              style={{ fontSize:15, padding:'14px', opacity:(!email||!password||status==='loading')?0.6:1 }}>
+              {status==='loading' ? '⏳ Aguarde…' : mode==='login' ? 'Entrar' : 'Criar conta'}
+            </button>
+          )}
+        </form>
+
+        {/* Secondary actions */}
+        <div style={{ marginTop:16, display:'flex', flexDirection:'column', gap:8 }}>
+          {mode === 'login' && (
+            <button onClick={handleReset} disabled={!email}
+              style={{ background:'none', border:'none', color:'var(--text-muted)', fontSize:13, cursor:'pointer', padding:'4px 0', textDecoration:'underline' }}>
+              Esqueci minha senha
+            </button>
+          )}
+          {mode === 'login' && (
+            <button onClick={() => { setMode('magic'); setStatus('idle'); setMsg('') }}
+              style={{ background:'none', border:'none', color:'var(--text-muted)', fontSize:12, cursor:'pointer', padding:'4px 0' }}>
+              Entrar com link mágico (email)
+            </button>
+          )}
+          {mode === 'magic' && (
+            <>
+              <div className="form-group" style={{marginBottom:10}}>
+                <label className="form-label">Email para o link</label>
+                <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="seu@email.com"/>
+              </div>
+              {status === 'sent'
+                ? <div style={{padding:'10px 13px',background:'var(--success-dim)',border:'1px solid rgba(0,184,148,0.2)',borderRadius:12,fontSize:13,color:'var(--success)'}}>📨 Link enviado! Abra o email e clique no link.</div>
+                : <button className="btn btn-primary btn-full" onClick={handleMagicLink} disabled={!email||status==='loading'}>{status==='loading'?'⏳':'✉️ Enviar link mágico'}</button>
+              }
+              <button onClick={() => setMode('login')} style={{background:'none',border:'none',color:'var(--text-muted)',fontSize:12,cursor:'pointer',padding:'4px 0'}}>← Voltar para senha</button>
+            </>
+          )}
+        </div>
+
+        {/* iOS tip */}
+        <div style={{ marginTop:20, padding:'12px 14px', background:'var(--bg-card)', border:'1px solid var(--border)', borderRadius:12 }}>
+          <div style={{ fontSize:11, color:'var(--text-muted)', lineHeight:1.6 }}>
+            <strong style={{color:'var(--text-secondary)'}}>📱 No iPhone/iPad:</strong> use email + senha para melhor compatibilidade. O link mágico pode não funcionar corretamente no Safari do iOS.
           </div>
         </div>
-      )}
+      </div>
     </div>
   )
 }

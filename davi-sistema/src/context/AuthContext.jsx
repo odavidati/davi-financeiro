@@ -8,30 +8,44 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (!isSupabaseConfigured()) {
-      setLoading(false)
-      return
-    }
+    if (!isSupabaseConfigured()) { setLoading(false); return }
 
-    // Sessão atual
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
       setLoading(false)
     })
 
-    // Escuta mudanças de auth
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, session) => setUser(session?.user ?? null)
     )
     return () => subscription.unsubscribe()
   }, [])
 
+  // ── Password login (works on all browsers/iOS) ──
+  async function signInWithPassword(email, password) {
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    return error
+  }
+
+  // ── Create account with password ──
+  async function signUp(email, password) {
+    const { error } = await supabase.auth.signUp({ email, password })
+    return error
+  }
+
+  // ── Magic link (kept as option) ──
   async function sendMagicLink(email) {
     const { error } = await supabase.auth.signInWithOtp({
       email,
-      options: {
-        emailRedirectTo: window.location.origin,
-      },
+      options: { emailRedirectTo: window.location.origin },
+    })
+    return error
+  }
+
+  // ── Reset password ──
+  async function resetPassword(email) {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/reset`,
     })
     return error
   }
@@ -42,7 +56,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, sendMagicLink, signOut }}>
+    <AuthContext.Provider value={{ user, loading, signInWithPassword, signUp, sendMagicLink, resetPassword, signOut }}>
       {children}
     </AuthContext.Provider>
   )
