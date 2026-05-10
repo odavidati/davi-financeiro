@@ -1,21 +1,8 @@
-const KEY = 'davi-finance-v3'
-
-export function loadState() {
-  try {
-    const raw = localStorage.getItem(KEY)
-    if (raw) return JSON.parse(raw)
-  } catch {}
-  return null
-}
-
-export function saveState(state) {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(state))
-  } catch (e) {
-    console.warn('Storage error:', e)
-  }
-}
-
-export function clearState() {
-  try { localStorage.removeItem(KEY) } catch {}
-}
+/**
+ * Storage — Supabase only, no localStorage.
+ * This file exists only for compatibility during migration.
+ * All persistence is handled directly in AppContext via Supabase.
+ */
+export const loadState  = () => null
+export const saveState  = () => {}
+export const clearState = () => {}

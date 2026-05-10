@@ -1,14 +1,19 @@
-import { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react'
+import { createContext, useContext, useReducer, useCallback, useEffect, useRef, useState } from 'react'
 import { DEFAULT_FIXED, PRESET_BILLS, CATEGORIES, INCOME_SOURCES, USER, RDB_INITIAL_BALANCE } from '../constants'
-import { loadState, saveState, clearState } from '../utils/storage'
 import { todayMonth } from '../utils/format'
 import { categorize } from '../utils/categorizer'
 import { SEED_TRANSACTIONS } from '../utils/seedData'
-import { syncTransactionsUp, fetchTransactions, syncSettingsUp, fetchSettings, syncChecklistUp, fetchChecklist, deleteTransactionRemote } from '../lib/sync'
+import {
+  fetchAllTransactions, upsertTransaction, upsertTransactionsBulk,
+  deleteTransactionDb, deleteAllTransactions,
+  fetchSettings, saveSettings,
+  fetchChecklist, saveChecklistMonth,
+} from '../lib/sync'
 import { isSupabaseConfigured } from '../lib/supabase'
 
 export const AppContext = createContext(null)
 
+// ─── Fase do mês ───
 function getPhase(month) {
   const [y, m] = month.split('-').map(Number)
   if (y < 2026 || (y === 2026 && m < 6)) return 'pre'
@@ -16,13 +21,11 @@ function getPhase(month) {
   return 'obra'
 }
 
-// ─── Get effective fixed expenses for a month ───
-// Merges base defaults with any per-month customizations stored in state
+// ─── Fixed expenses por fase ───
 function getEffectiveFixed(month, customFixed) {
   const phase = getPhase(month)
   const base  = DEFAULT_FIXED[phase] || []
   const overrides = customFixed?.[month] || {}
-  // Apply overrides: amount changes, hidden items, custom additions
   return [
     ...base
       .filter(f => overrides.hidden?.[f.id] !== true)
@@ -31,253 +34,339 @@ function getEffectiveFixed(month, customFixed) {
   ]
 }
 
-// ─── Schema version — bump to force cache clear on all clients ───
-const STATE_VERSION = 10
-
-function buildFreshState() {
-  const seeded = {}
-  for (const [month, txs] of Object.entries(SEED_TRANSACTIONS)) {
-    seeded[month] = txs.map(tx => ({ ...tx, category: categorize(tx.description) }))
-  }
-  return {
-    activeMonth: todayMonth(),
-    transactions: seeded,
-    settings: { ccsEmitted: false, emergencyFundCurrent: 600, emergencyFundGoal: 8000, rdbInitialBalance: RDB_INITIAL_BALANCE, theme: 'light' },
-    checklist: {},
-    bills: {},
-    customFixed: {},  // per-month fixed expense customizations
-    reminders: [],       // { id, title, amount, dueDate, category, icon }
-    installments: [],    // { id, description, totalAmount, installmentAmount, totalInstallments, paidCount, startMonth, category, icon, dueDay, active }
-    _seeded: true,
-    _version: STATE_VERSION,
-  }
+// ─── Default state (no data yet) ───
+const EMPTY_STATE = {
+  activeMonth: todayMonth(),
+  transactions: {},
+  settings: {
+    ccsEmitted: false,
+    emergencyFundCurrent: 600,
+    emergencyFundGoal: 8000,
+    rdbInitialBalance: RDB_INITIAL_BALANCE,
+    theme: 'light',
+  },
+  checklist: {},
+  bills: {},
+  customFixed: {},
+  reminders: [],
+  installments: [],
 }
 
-function buildLocalState() {
-  try {
-    const saved = loadState()
-    // Only reuse saved state if it has the current version AND real transaction data
-    if (
-      saved &&
-      saved._version === STATE_VERSION &&
-      saved._seeded &&
-      saved.transactions &&
-      typeof saved.transactions === 'object' &&
-      // Sanity check: must have at least one real month of data
-      Object.keys(saved.transactions).length >= 5
-    ) {
-      const theme = saved.settings?.theme || 'light'
-      document.documentElement.setAttribute('data-theme', theme)
-      return {
-        activeMonth: saved.activeMonth || todayMonth(),
-        transactions: saved.transactions,
-        settings: { ccsEmitted: false, emergencyFundCurrent: 0, emergencyFundGoal: 8000, theme: 'light', ...(saved.settings || {}) },
-        checklist: saved.checklist || {},
-        bills: saved.bills || {},
-        customFixed: saved.customFixed || {},
-        reminders: saved.reminders || [],
-        installments: saved.installments || [],
-        _seeded: true,
-        _version: STATE_VERSION,
-      }
-    }
-  } catch (e) {
-    console.warn('State load failed, rebuilding from scratch:', e)
-  }
-  // Clear whatever was there (old version / corrupt / missing data)
-  try { clearState() } catch {}
-  const fresh = buildFreshState()
-  document.documentElement.setAttribute('data-theme', 'light')
-  saveState(fresh)
-  return fresh
-}
-
+// ─── Reducer — pure state updates, NO persistence ───
 function reducer(state, action) {
-  let next
   switch (action.type) {
     case 'SET_MONTH':
-      next = { ...state, activeMonth: action.month }
-      break
-    case 'UPSERT_TRANSACTIONS': {
-      const { month, list } = action
-      const existing = ((state.transactions||{})[month]||[]).filter(t => !list.some(n => n.id === t.id))
-      next = { ...state, transactions: { ...(state.transactions||{}), [month]: [...existing,...list].sort((a,b)=>b.date.localeCompare(a.date)) } }
-      break
-    }
+      return { ...state, activeMonth: action.month }
+
+    case 'SET_STATE':
+      return { ...action.state }
+
+    case 'SET_TRANSACTIONS':
+      return { ...state, transactions: action.transactions }
+
     case 'ADD_TRANSACTION': {
       const { month, tx } = action
-      next = { ...state, transactions: { ...(state.transactions||{}), [month]: [tx,...((state.transactions||{})[month]||[])].sort((a,b)=>b.date.localeCompare(a.date)) } }
-      break
+      const existing = (state.transactions[month] || [])
+      const updated  = [tx, ...existing.filter(t => t.id !== tx.id)]
+        .sort((a,b) => b.date.localeCompare(a.date))
+      return { ...state, transactions: { ...state.transactions, [month]: updated } }
     }
+
+    case 'UPSERT_TRANSACTIONS': {
+      const { month, list } = action
+      const existing = (state.transactions[month] || [])
+        .filter(t => !list.some(n => n.id === t.id))
+      const merged = [...existing, ...list].sort((a,b) => b.date.localeCompare(a.date))
+      return { ...state, transactions: { ...state.transactions, [month]: merged } }
+    }
+
     case 'DELETE_TRANSACTION': {
       const { month, id } = action
-      next = { ...state, transactions: { ...(state.transactions||{}), [month]: ((state.transactions||{})[month]||[]).filter(t=>t.id!==id) } }
-      break
+      return {
+        ...state,
+        transactions: {
+          ...state.transactions,
+          [month]: (state.transactions[month] || []).filter(t => t.id !== id),
+        },
+      }
     }
+
     case 'UPDATE_TRANSACTION': {
       const { month, tx } = action
-      next = { ...state, transactions: { ...(state.transactions||{}), [month]: ((state.transactions||{})[month]||[]).map(t=>t.id===tx.id?tx:t) } }
-      break
+      return {
+        ...state,
+        transactions: {
+          ...state.transactions,
+          [month]: (state.transactions[month] || []).map(t => t.id === tx.id ? tx : t),
+        },
+      }
     }
+
     case 'SET_SETTING': {
       const newSettings = { ...state.settings, [action.key]: action.value }
-      if (action.key === 'theme') document.documentElement.setAttribute('data-theme', action.value)
-      next = { ...state, settings: newSettings }
-      break
+      if (action.key === 'theme') {
+        document.documentElement.setAttribute('data-theme', action.value)
+      }
+      return { ...state, settings: newSettings }
     }
+
     case 'TOGGLE_CHECKLIST': {
       const { month, itemId } = action
       const mc = state.checklist[month] || {}
-      next = { ...state, checklist: { ...state.checklist, [month]: { ...mc, [itemId]: !mc[itemId] } } }
-      break
+      return { ...state, checklist: { ...state.checklist, [month]: { ...mc, [itemId]: !mc[itemId] } } }
     }
+
     case 'TOGGLE_BILL': {
       const { month, billId } = action
-      const mb = (state.bills||{})[month] || {}
+      const mb  = (state.bills[month] || {})
       const cur = mb[billId] || { paid: false, paidDate: null }
       const paid = !cur.paid
-      next = { ...state, bills: { ...(state.bills||{}), [month]: { ...mb, [billId]: { paid, paidDate: paid ? new Date().toISOString().slice(0,10) : null } } } }
-      break
+      return {
+        ...state,
+        bills: {
+          ...state.bills,
+          [month]: { ...mb, [billId]: { paid, paidDate: paid ? new Date().toISOString().slice(0,10) : null } },
+        },
+      }
     }
+
     case 'ADD_CUSTOM_BILL': {
       const { month, bill } = action
-      const mb = (state.bills||{})[month] || {}
-      next = { ...state, bills: { ...(state.bills||{}), [month]: { ...mb, _custom: [...(mb._custom||[]), bill] } } }
-      break
+      const mb = state.bills[month] || {}
+      return { ...state, bills: { ...state.bills, [month]: { ...mb, _custom: [...(mb._custom||[]), bill] } } }
     }
+
     case 'DELETE_CUSTOM_BILL': {
       const { month, billId } = action
-      const mb = (state.bills||{})[month] || {}
-      next = { ...state, bills: { ...(state.bills||{}), [month]: { ...mb, _custom: (mb._custom||[]).filter(b=>b.id!==billId) } } }
-      break
+      const mb = state.bills[month] || {}
+      return { ...state, bills: { ...state.bills, [month]: { ...mb, _custom: (mb._custom||[]).filter(b=>b.id!==billId) } } }
     }
-    // ─── Custom fixed expenses ───
+
     case 'SET_FIXED_AMOUNT': {
       const { month, fixedId, amount } = action
       const cf = state.customFixed || {}
       const mf = cf[month] || {}
-      next = { ...state, customFixed: { ...cf, [month]: { ...mf, amounts: { ...(mf.amounts||{}), [fixedId]: amount } } } }
-      break
+      return { ...state, customFixed: { ...cf, [month]: { ...mf, amounts: { ...(mf.amounts||{}), [fixedId]: amount } } } }
     }
+
     case 'TOGGLE_FIXED_HIDDEN': {
       const { month, fixedId } = action
       const cf = state.customFixed || {}
       const mf = cf[month] || {}
       const cur = mf.hidden?.[fixedId] || false
-      next = { ...state, customFixed: { ...cf, [month]: { ...mf, hidden: { ...(mf.hidden||{}), [fixedId]: !cur } } } }
-      break
+      return { ...state, customFixed: { ...cf, [month]: { ...mf, hidden: { ...(mf.hidden||{}), [fixedId]: !cur } } } }
     }
+
     case 'ADD_EXTRA_FIXED': {
       const { month, item } = action
       const cf = state.customFixed || {}
       const mf = cf[month] || {}
-      next = { ...state, customFixed: { ...cf, [month]: { ...mf, extra: [...(mf.extra||[]), item] } } }
-      break
+      return { ...state, customFixed: { ...cf, [month]: { ...mf, extra: [...(mf.extra||[]), item] } } }
     }
-    case 'REMOVE_EXTRA_FIXED': {
-      const { month, itemId } = action
-      const cf = state.customFixed || {}
-      const mf = cf[month] || {}
-      next = { ...state, customFixed: { ...cf, [month]: { ...mf, extra: (mf.extra||[]).filter(e=>e.id!==itemId) } } }
-      break
-    }
-    // ─── Reminders ───
-    case 'ADD_REMINDER': {
-      next = { ...state, reminders: [...(state.reminders||[]), action.reminder] }
-      break
-    }
-    case 'UPDATE_REMINDER': {
-      next = { ...state, reminders: (state.reminders||[]).map(r=>r.id===action.reminder.id?action.reminder:r) }
-      break
-    }
-    case 'DELETE_REMINDER': {
-      next = { ...state, reminders: (state.reminders||[]).filter(r=>r.id!==action.id) }
-      break
-    }
-    // ─── Installments ───
+
+    case 'ADD_REMINDER':
+      return { ...state, reminders: [...(state.reminders||[]), action.reminder] }
+
+    case 'UPDATE_REMINDER':
+      return { ...state, reminders: (state.reminders||[]).map(r=>r.id===action.reminder.id?action.reminder:r) }
+
+    case 'DELETE_REMINDER':
+      return { ...state, reminders: (state.reminders||[]).filter(r=>r.id!==action.id) }
+
     case 'ADD_INSTALLMENT':
-      next = { ...state, installments: [...(state.installments||[]), action.installment] }
-      break
-    case 'PAY_INSTALLMENT': {
-      const inst = (state.installments||[]).find(i => i.id === action.id)
-      if (!inst) return state
-      next = { ...state, installments: (state.installments||[]).map(i => i.id === action.id ? { ...i, paidCount: Math.min(i.paidCount + 1, i.totalInstallments) } : i) }
-      break
-    }
+      return { ...state, installments: [...(state.installments||[]), action.installment] }
+
     case 'DELETE_INSTALLMENT':
-      next = { ...state, installments: (state.installments||[]).filter(i => i.id !== action.id) }
-      break
-    case 'MERGE_REMOTE':
-      next = { ...state, transactions: action.transactions??state.transactions, settings: action.settings??state.settings, checklist: action.checklist??state.checklist }
-      break
-    case 'RESET':
-      clearState()
-      document.documentElement.setAttribute('data-theme', 'light')
-      clearState()
-      next = buildFreshState()
-      next._version = STATE_VERSION
-      saveState(next)
-      break
+      return { ...state, installments: (state.installments||[]).filter(i=>i.id!==action.id) }
+
     default:
       return state
   }
-  saveState(next)
-  return next
 }
 
+// ─── Provider ───
 export function AppProvider({ children, userId }) {
-  const [state, dispatch] = useReducer(reducer, null, buildLocalState)
-  const syncTimeout = useRef({})
+  const [state, dispatch] = useReducer(reducer, EMPTY_STATE)
+  const [loading, setLoading] = useState(true)
+  const [syncing, setSyncing] = useState(false)
+  const settingsSaveTimer = useRef(null)
 
+  // ─── Apply theme ───
   useEffect(() => {
-    if (!userId || !isSupabaseConfigured()) return
-    async function load() {
-      const [txs, settings, checklist] = await Promise.all([fetchTransactions(userId), fetchSettings(userId), fetchChecklist(userId)])
-      if (txs || settings || checklist) dispatch({ type: 'MERGE_REMOTE', transactions: txs, settings, checklist })
+    const theme = state.settings?.theme || 'light'
+    document.documentElement.setAttribute('data-theme', theme)
+  }, [state.settings?.theme])
+
+  // ─── LOAD FROM SUPABASE ON MOUNT ───
+  useEffect(() => {
+    if (!userId) { setLoading(false); return }
+
+    async function loadFromSupabase() {
+      setLoading(true)
+      try {
+        // Load all data in parallel
+        const [remoteTxs, remoteSettings, remoteChecklist] = await Promise.all([
+          fetchAllTransactions(userId),
+          fetchSettings(userId),
+          fetchChecklist(userId),
+        ])
+
+        const remoteCount = Object.values(remoteTxs || {}).flat().length
+
+        if (remoteCount === 0) {
+          // ── First time: seed from CSV data ──
+          console.log('🌱 First time: seeding from CSV data...')
+          const seeded = {}
+          for (const [month, txs] of Object.entries(SEED_TRANSACTIONS)) {
+            seeded[month] = txs.map(tx => ({ ...tx, category: categorize(tx.description, tx.amount) }))
+          }
+          // Save seed to Supabase
+          setSyncing(true)
+          for (const [month, txList] of Object.entries(seeded)) {
+            await upsertTransactionsBulk(userId, month, txList)
+          }
+          const defaultSettings = EMPTY_STATE.settings
+          await saveSettings(userId, defaultSettings)
+          setSyncing(false)
+          dispatch({ type: 'SET_STATE', state: { ...EMPTY_STATE, transactions: seeded } })
+          console.log('✅ Seed data saved to Supabase')
+        } else {
+          // ── Load existing data from Supabase ──
+          console.log(`📥 Loading ${remoteCount} transactions from Supabase`)
+          const mergedSettings = { ...EMPTY_STATE.settings, ...(remoteSettings || {}) }
+          dispatch({
+            type: 'SET_STATE',
+            state: {
+              ...EMPTY_STATE,
+              transactions: remoteTxs || {},
+              settings: mergedSettings,
+              checklist: remoteChecklist || {},
+            },
+          })
+        }
+      } catch (err) {
+        console.error('Error loading from Supabase:', err)
+        // Fallback to seed data
+        const seeded = {}
+        for (const [month, txs] of Object.entries(SEED_TRANSACTIONS)) {
+          seeded[month] = txs.map(tx => ({ ...tx, category: categorize(tx.description, tx.amount) }))
+        }
+        dispatch({ type: 'SET_STATE', state: { ...EMPTY_STATE, transactions: seeded } })
+      } finally {
+        setLoading(false)
+      }
     }
-    load()
+
+    loadFromSupabase()
   }, [userId])
 
-  function scheduleSyncTx(month, list) {
-    if (!userId || !isSupabaseConfigured()) return
-    clearTimeout(syncTimeout.current[`tx_${month}`])
-    syncTimeout.current[`tx_${month}`] = setTimeout(() => syncTransactionsUp(userId, month, list), 1500)
-  }
-  function scheduleSyncSettings(settings) {
-    if (!userId || !isSupabaseConfigured()) return
-    clearTimeout(syncTimeout.current.settings)
-    syncTimeout.current.settings = setTimeout(() => syncSettingsUp(userId, settings), 1500)
-  }
-  function scheduleSyncCk(month, items) {
-    if (!userId || !isSupabaseConfigured()) return
-    clearTimeout(syncTimeout.current[`ck_${month}`])
-    syncTimeout.current[`ck_${month}`] = setTimeout(() => syncChecklistUp(userId, month, items), 1500)
+  // ─── Save settings to Supabase (debounced) ───
+  function scheduleSaveSettings(newSettings) {
+    if (!userId) return
+    clearTimeout(settingsSaveTimer.current)
+    settingsSaveTimer.current = setTimeout(() => {
+      saveSettings(userId, newSettings)
+    }, 800)
   }
 
-  function dispatchAndSync(action) {
-    dispatch(action)
+  // ─── Dispatch with Supabase persistence ───
+  async function dispatchAndPersist(action) {
+    dispatch(action)  // update UI immediately
+
+    if (!userId) return
+
     switch (action.type) {
-      case 'UPSERT_TRANSACTIONS': case 'ADD_TRANSACTION': case 'UPDATE_TRANSACTION':
-        setTimeout(() => { const s = loadState(); scheduleSyncTx(action.month, s?.transactions?.[action.month]||[]) }, 0); break
+      case 'ADD_TRANSACTION':
+        await upsertTransaction(userId, action.month, action.tx)
+        break
+
+      case 'UPSERT_TRANSACTIONS':
+        await upsertTransactionsBulk(userId, action.month, action.list)
+        break
+
       case 'DELETE_TRANSACTION':
-        if (userId && isSupabaseConfigured()) deleteTransactionRemote(userId, action.id)
-        setTimeout(() => { const s = loadState(); scheduleSyncTx(action.month, s?.transactions?.[action.month]||[]) }, 0); break
+        await deleteTransactionDb(userId, action.id)
+        break
+
+      case 'UPDATE_TRANSACTION':
+        await upsertTransaction(userId, action.month, action.tx)
+        break
+
       case 'SET_SETTING':
-        setTimeout(() => { const s = loadState(); scheduleSyncSettings(s?.settings||{}) }, 0); break
+      case 'SET_FIXED_AMOUNT':
+      case 'TOGGLE_FIXED_HIDDEN':
+      case 'ADD_EXTRA_FIXED':
+      case 'TOGGLE_BILL':
+      case 'ADD_CUSTOM_BILL':
+      case 'DELETE_CUSTOM_BILL':
+      case 'ADD_REMINDER':
+      case 'DELETE_REMINDER':
+      case 'ADD_INSTALLMENT':
+      case 'DELETE_INSTALLMENT': {
+        // Save entire settings blob (includes bills, customFixed, reminders, installments)
+        // We read the updated state in next tick
+        setTimeout(() => {
+          // Get latest state after reducer update
+          scheduleSaveSettings({
+            ...state.settings,
+            ...(action.type === 'SET_SETTING' ? { [action.key]: action.value } : {}),
+          })
+        }, 0)
+        break
+      }
+
       case 'TOGGLE_CHECKLIST':
-        setTimeout(() => { const s = loadState(); scheduleSyncCk(action.month, s?.checklist?.[action.month]||{}) }, 0); break
+        setTimeout(async () => {
+          // Read updated checklist from latest state
+          const updatedCk = { ...(state.checklist[action.month] || {}), [action.itemId]: !(state.checklist[action.month]?.[action.itemId]) }
+          await saveChecklistMonth(userId, action.month, updatedCk)
+        }, 0)
+        break
+
+      case 'SET_MONTH':
+        break // no persistence needed
+
+      default:
+        break
     }
   }
 
-  const getFixed = useCallback((month) =>
-    getEffectiveFixed(month, state.customFixed),
-    [state.customFixed]
-  )
+  // ─── RESET: clear Supabase + reseed ───
+  async function resetAndReseed() {
+    if (!userId) return
+    setLoading(true)
+    try {
+      await deleteAllTransactions(userId)
+      const seeded = {}
+      for (const [month, txs] of Object.entries(SEED_TRANSACTIONS)) {
+        seeded[month] = txs.map(tx => ({ ...tx, category: categorize(tx.description, tx.amount) }))
+      }
+      for (const [month, txList] of Object.entries(seeded)) {
+        await upsertTransactionsBulk(userId, month, txList)
+      }
+      await saveSettings(userId, EMPTY_STATE.settings)
+      dispatch({ type: 'SET_STATE', state: { ...EMPTY_STATE, transactions: seeded } })
+    } catch (err) {
+      console.error('Reset error:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
 
-  const getTx           = useCallback((month) => (state.transactions||{})[month] || [], [state.transactions])
-  const getBills        = useCallback((month) => (state.bills||{})[month] || {}, [state.bills])
-  const getCustomFixed  = useCallback((month) => (state.customFixed||{})[month] || {}, [state.customFixed])
-  const getReminders    = useCallback((month) => {
+  // ─── Computed getters ───
+  const getFixed = useCallback((month) =>
+    getEffectiveFixed(month, state.customFixed), [state.customFixed])
+
+  const getTx = useCallback((month) =>
+    (state.transactions[month] || []), [state.transactions])
+
+  const getBills = useCallback((month) =>
+    (state.bills[month] || {}), [state.bills])
+
+  const getCustomFixed = useCallback((month) =>
+    (state.customFixed[month] || {}), [state.customFixed])
+
+  const getReminders = useCallback((month) => {
     const [y, m] = month.split('-').map(Number)
     return (state.reminders||[]).filter(r => {
       if (!r.dueDate) return false
@@ -286,105 +375,6 @@ export function AppProvider({ children, userId }) {
     })
   }, [state.reminders])
 
-  const getSummary = useCallback((month) => {
-    const txs = getTx(month)
-
-    // ── INCOME ──
-    // salary: transactions tagged 'salario'
-    const salary = txs
-      .filter(t => t.amount > 0 && t.category === 'salario')
-      .reduce((s,t) => s+t.amount, 0)
-
-    // variable income: aulas, freela, convites, outros_rec, emprestimo
-    // (excludes rdb_resgate — reserve withdrawals are NOT income)
-    const INCOME_CATS = ['aulas','freela','convites','outros_rec','emprestimo']
-    const variableIncome = txs
-      .filter(t => t.amount > 0 && INCOME_CATS.includes(t.category))
-      .reduce((s,t) => s+t.amount, 0)
-
-    // RDB movements (separate from regular income/expense)
-    const rdbResgates = txs
-      .filter(t => t.category === 'rdb_resgate')
-      .reduce((s,t) => s+t.amount, 0)
-    const rdbAplicacoes = txs
-      .filter(t => t.category === 'rdb_aplicacao')
-      .reduce((s,t) => s+Math.abs(t.amount), 0)
-
-    // ── EXPENSES ──
-    // Only real expenses: exclude rdb_aplicacao, empresa_encerrada, rdb_resgate (credits)
-    const EXCLUDE_CATS = ['rdb_aplicacao','rdb_resgate','empresa_encerrada','salario','aulas','freela','convites','outros_rec','emprestimo','estorno']
-    const expenses = txs
-      .filter(t => t.amount < 0 && !EXCLUDE_CATS.includes(t.category) && t.exclude !== true)
-      .reduce((s,t) => s+Math.abs(t.amount), 0)
-
-    // Also count explicit variable income (manual entries) we tagged
-    const totalIncome = salary + variableIncome
-    // If no salary was recorded (empty month or future), use CLT base as estimate
-    const effectiveIncome = totalIncome > 0 ? totalIncome : (txs.length === 0 ? USER.netIncome : totalIncome)
-
-    const surplus = effectiveIncome - expenses
-    const pct     = Math.round((expenses / Math.max(effectiveIncome, 1)) * 100)
-
-    // Fixed budget reference (for display in Config/analysis)
-    const fixed       = getFixed(month)
-    const fixedBudget = fixed.reduce((s,f) => s+f.amount, 0)
-
-    return {
-      salary,
-      variableIncome,
-      totalIncome: effectiveIncome,
-      cltSalary: salary,
-      expenses,
-      fixedBudget,
-      fixedTotal: fixedBudget,
-      totalSpent: expenses,
-      surplus,
-      pct,
-      net: effectiveIncome,
-      rdbResgates,
-      rdbAplicacoes,
-      hasTx: txs.length > 0,
-      isEstimated: totalIncome === 0 && txs.length === 0,
-    }
-  }, [getFixed, getTx])
-
-  const getByCategory = useCallback((month) => {
-    const fixed = getFixed(month); const txs = getTx(month)
-    const map = {}
-    CATEGORIES.forEach(c => { map[c.id] = { ...c, total: 0, items: [] } })
-    fixed.forEach(f => {
-      if (!map[f.category]) map[f.category] = { id: f.category, name: f.category, icon: '📦', color: '#94A3B8', budget: 0, total: 0, items: [] }
-      map[f.category].total += f.amount
-      map[f.category].items.push({ ...f, isFixed: true, amount: -f.amount })
-    })
-    txs.filter(t => t.amount < 0).forEach(t => {
-      const cat = map[t.category] || map['outros']
-      cat.total += Math.abs(t.amount); cat.items.push(t)
-    })
-    return Object.values(map).filter(c => c.total > 0).sort((a,b) => b.total - a.total)
-  }, [getFixed, getTx])
-
-  // Bills for a month: ONLY preset special bills + custom manual bills
-  // Fixed expenses (Netflix, internet etc) are tracked via CSV transactions in Gastos
-  // — they should NOT appear as separate checklist items here to avoid confusion.
-  const getBillsSummary = useCallback((month) => {
-    const billStatus = getBills(month)
-    const custom  = billStatus._custom || []
-    // Only preset special bills for this month (Shopee, Senff, IA Tools, etc.)
-    const presets = PRESET_BILLS.filter(b => b.month === month)
-    const allBills = [
-      ...presets.map(b => ({ ...b, billId: b.id, isPaid: !!(billStatus[b.id]?.paid), paidDate: billStatus[b.id]?.paidDate, isPreset: true })),
-      ...custom.map(b => ({ ...b, billId: b.id, isPaid: !!(billStatus[b.id]?.paid), paidDate: billStatus[b.id]?.paidDate })),
-    ]
-    const paid   = allBills.filter(b => b.isPaid)
-    const unpaid = allBills.filter(b => !b.isPaid)
-    const totalPaid   = paid.reduce((s,b) => s+b.amount, 0)
-    const totalUnpaid = unpaid.reduce((s,b) => s+b.amount, 0)
-    const pct = allBills.length > 0 ? Math.round((paid.length/allBills.length)*100) : 0
-    return { allBills, paid, unpaid, totalPaid, totalUnpaid, pct, allPaid: unpaid.length===0 && allBills.length>0 }
-  }, [getBills])
-
-  // Returns installments due in a given month
   const getInstallmentsForMonth = useCallback((month) => {
     const [y, m] = month.split('-').map(Number)
     return (state.installments||[]).filter(inst => {
@@ -394,15 +384,97 @@ export function AppProvider({ children, userId }) {
       return monthsIn >= 0 && monthsIn < inst.totalInstallments
     }).map(inst => {
       const [sy, sm] = inst.startMonth.split('-').map(Number)
-      const monthsIn = (y - sy) * 12 + (m - sm)
-      const number = monthsIn + 1
+      const [yy, mm] = month.split('-').map(Number)
+      const number = (yy - sy) * 12 + (mm - sm) + 1
       return { ...inst, number, isPaid: number <= inst.paidCount }
     })
   }, [state.installments])
 
+  const getSummary = useCallback((month) => {
+    const txs = getTx(month)
+
+    const salary = txs
+      .filter(t => t.amount > 0 && t.category === 'salario')
+      .reduce((s,t) => s+t.amount, 0)
+
+    const INCOME_CATS = ['aulas','freela','convites','outros_rec','emprestimo']
+    const variableIncome = txs
+      .filter(t => t.amount > 0 && INCOME_CATS.includes(t.category))
+      .reduce((s,t) => s+t.amount, 0)
+
+    const rdbResgates = txs
+      .filter(t => t.category === 'rdb_resgate')
+      .reduce((s,t) => s+t.amount, 0)
+
+    const rdbAplicacoes = txs
+      .filter(t => t.category === 'rdb_aplicacao')
+      .reduce((s,t) => s+Math.abs(t.amount), 0)
+
+    const EXCLUDE_CATS = ['rdb_aplicacao','rdb_resgate','empresa_encerrada','salario','aulas','freela','convites','outros_rec','emprestimo','estorno']
+    const expenses = txs
+      .filter(t => t.amount < 0 && !EXCLUDE_CATS.includes(t.category) && !t.exclude)
+      .reduce((s,t) => s+Math.abs(t.amount), 0)
+
+    const effectiveIncome = (salary + variableIncome) > 0
+      ? (salary + variableIncome)
+      : (txs.length === 0 ? USER.netIncome : 0)
+
+    const surplus = effectiveIncome - expenses
+    const pct     = Math.round((expenses / Math.max(effectiveIncome, 1)) * 100)
+
+    const fixed       = getFixed(month)
+    const fixedBudget = fixed.reduce((s,f) => s+f.amount, 0)
+
+    return {
+      salary, variableIncome,
+      totalIncome: effectiveIncome,
+      cltSalary: salary,
+      expenses, fixedBudget, fixedTotal: fixedBudget,
+      totalSpent: expenses, surplus, pct,
+      net: effectiveIncome,
+      rdbResgates, rdbAplicacoes,
+      hasTx: txs.length > 0,
+      isEstimated: effectiveIncome === USER.netIncome && txs.length === 0,
+    }
+  }, [getFixed, getTx])
+
+  const getByCategory = useCallback((month) => {
+    const txs = getTx(month)
+    const map = {}
+    CATEGORIES.forEach(c => { map[c.id] = { ...c, total: 0, items: [] } })
+
+    const SKIP = ['rdb_aplicacao','rdb_resgate','empresa_encerrada','estorno','salario','aulas','freela','convites','outros_rec','emprestimo']
+    txs
+      .filter(t => t.amount < 0 && !SKIP.includes(t.category) && !t.exclude)
+      .forEach(t => {
+        const cat = map[t.category] || map['outros']
+        cat.total += Math.abs(t.amount)
+        cat.items.push(t)
+      })
+
+    return Object.values(map).filter(c => c.total > 0).sort((a,b) => b.total - a.total)
+  }, [getTx])
+
+  const getBillsSummary = useCallback((month) => {
+    const billStatus = getBills(month)
+    const custom  = billStatus._custom || []
+    const presets = PRESET_BILLS.filter(b => b.month === month)
+    const allBills = [
+      ...presets.map(b => ({ ...b, billId:b.id, isPaid:!!(billStatus[b.id]?.paid), paidDate:billStatus[b.id]?.paidDate, isPreset:true })),
+      ...custom.map(b => ({ ...b, billId:b.id, isPaid:!!(billStatus[b.id]?.paid), paidDate:billStatus[b.id]?.paidDate })),
+    ]
+    const paid        = allBills.filter(b => b.isPaid)
+    const unpaid      = allBills.filter(b => !b.isPaid)
+    const totalPaid   = paid.reduce((s,b) => s+b.amount, 0)
+    const totalUnpaid = unpaid.reduce((s,b) => s+b.amount, 0)
+    const pct         = allBills.length > 0 ? Math.round((paid.length/allBills.length)*100) : 0
+    return { allBills, paid, unpaid, totalPaid, totalUnpaid, pct, allPaid: unpaid.length===0 && allBills.length>0 }
+  }, [getBills])
+
   return (
     <AppContext.Provider value={{
-      state, dispatch: dispatchAndSync,
+      state, dispatch: dispatchAndPersist,
+      loading, syncing, resetAndReseed,
       getFixed, getTx, getSummary, getByCategory,
       getBills, getBillsSummary, getCustomFixed,
       getReminders, getInstallmentsForMonth,

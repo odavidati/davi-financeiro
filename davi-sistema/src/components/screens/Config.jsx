@@ -33,7 +33,7 @@ function Section({ title, children }) {
   )
 }
 
-export default function Config({ onSignOut }) {
+export default function Config({ onSignOut, onReset }) {
   const { state, dispatch } = useApp()
   const { settings } = state
 
@@ -195,6 +195,7 @@ export default function Config({ onSignOut }) {
       </Section>
 
 
+
       {/* Sign out */}
       {onSignOut && (
         <Section title="Conta">
@@ -216,12 +217,12 @@ export default function Config({ onSignOut }) {
         <button
           className="btn btn-danger btn-full"
           onClick={() => {
-            if (window.confirm('⚠️ Isso apagará TUDO, incluindo os dados Nubank pré-carregados. Tem certeza?')) {
-              dispatch({ type: 'RESET' })
+            if (window.confirm('⚠️ Isso vai apagar TUDO do Supabase e recarregar os extratos originais. Tem certeza?')) {
+              onReset && onReset()
             }
           }}
         >
-          🗑️ Resetar todos os dados
+          🔄 Resetar e recarregar extratos Nubank
         </button>
       </div>
     </div>
