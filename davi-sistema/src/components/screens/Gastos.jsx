@@ -207,30 +207,57 @@ function ImportSheet({ month, onClose, onImport }) {
 
 /* ─── Edit/Delete sheet ─── */
 function EditSheet({ tx, month, onClose, onDelete, onUpdate }) {
-  const [cat, setCat] = useState(tx.category)
   const isIncome = tx.amount > 0
+  const [desc, setDesc]   = useState(tx.description)
+  const [amount, setAmt]  = useState(String(Math.abs(tx.amount)))
+  const [cat, setCat]     = useState(tx.category)
+  const [date, setDate]   = useState(tx.date)
+
+  function save() {
+    const amt = parseFloat(amount.replace(',','.'))
+    if (isNaN(amt) || amt <= 0) return
+    onUpdate({ ...tx, description: desc.trim()||tx.description, amount: isIncome ? amt : -amt, category: cat, date })
+    onClose()
+  }
+
   return (
     <div className="overlay-backdrop" onClick={onClose}>
       <div className="sheet" onClick={e => e.stopPropagation()}>
         <div className="sheet-handle"/>
-        <div className="sheet-title fs-15">{tx.description}</div>
-        <div className="row gap-8 mb-16">
-          <div className={`amt-lg ${isIncome?'c-success':'c-danger'}`}>
-            {isIncome?'+':'-'}{fmt(Math.abs(tx.amount))}
+        <div className="sheet-title">Editar lançamento</div>
+        {tx.type==='csv' && (
+          <div className="alert alert-info mb-14">
+            <span className="alert-icon">ℹ️</span>
+            <span className="fs-12">Lançamento do CSV — a edição vai sobrescrever o valor original.</span>
           </div>
-          <div className="fs-12 c-muted">{tx.date}</div>
-          {tx.type==='csv' && <span className="badge badge-muted">CSV</span>}
+        )}
+        <div className="form-group">
+          <label className="form-label">Descrição</label>
+          <input className="input" value={desc} onChange={e=>setDesc(e.target.value)}/>
+        </div>
+        <div className="grid-2" style={{gap:12,marginBottom:14}}>
+          <div className="form-group" style={{marginBottom:0}}>
+            <label className="form-label">Valor (R$)</label>
+            <input className="input input-mono" value={amount} onChange={e=>setAmt(e.target.value)} inputMode="decimal"/>
+          </div>
+          <div className="form-group" style={{marginBottom:0}}>
+            <label className="form-label">Data</label>
+            <input className="input" type="date" value={date} onChange={e=>setDate(e.target.value)}/>
+          </div>
         </div>
         <div className="form-group">
           <label className="form-label">Categoria</label>
-          <select className="input" value={cat} onChange={e => { setCat(e.target.value); onUpdate({...tx,category:e.target.value}) }}>
+          <select className="input" value={cat} onChange={e=>setCat(e.target.value)}>
             {isIncome
               ? INCOME_SOURCES.map(s => <option key={s.id} value={s.id}>{s.icon} {s.name}</option>)
               : CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)
             }
           </select>
         </div>
-        <button className="btn btn-danger btn-full mt-12" onClick={() => { onDelete(tx.id); onClose() }}>🗑️ Excluir</button>
+        <div className="row gap-8 mt-12">
+          <button className="btn btn-danger flex-1" onClick={() => { onDelete(tx.id); onClose() }}>🗑️ Excluir</button>
+          <button className="btn btn-primary flex-1" onClick={save}>💾 Salvar</button>
+        </div>
       </div>
     </div>
   )

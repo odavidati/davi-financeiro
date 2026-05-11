@@ -12,6 +12,7 @@ import Gastos from './components/screens/Gastos'
 import Analise from './components/screens/Analise'
 import Metas from './components/screens/Metas'
 import Assistente from './components/screens/Assistente'
+import Casal from './components/screens/Casal'
 import Config from './components/screens/Config'
 import { categorize } from './utils/categorizer'
 import { uid } from './utils/format'
@@ -169,6 +170,7 @@ function AppShell({ user, signOut }) {
       {tab==='analise'    && <Analise/>}
       {tab==='metas'      && <Metas/>}
       {tab==='assistente' && <Assistente/>}
+      {tab==='casal'      && <Casal/>}
 
       {(tab==='home'||tab==='gastos') && <FAB onClick={(mode) => setQuick(mode||'expense')}/>}
       <BottomNav active={tab} onChange={setTab}/>
